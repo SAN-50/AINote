@@ -1,8 +1,8 @@
 {
   "name": "ainote",
   "productName": "나무 노트",
-  "version": "1.1.0",
-  "description": "깔끔하고 안전한 데스크톱 노트 앱 (나무 노트)",
+  "version": "1.2.0",
+  "description": "스마트 노트 & 클립보드 매니저 (나무 노트)",
   "main": "main.js",
   "author": "Mokdua",
   "license": "ISC",
