@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-50 dark:bg-samsung-dark text-gray-800 dark:text-gray-100 transition-colors duration-500 overflow-x-hidden font-sans;
+  background-image:
+    radial-gradient(circle at top right, rgba(43, 101, 243, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at bottom left, rgba(168, 85, 247, 0.05) 0%, transparent 50%);
+  background-attachment: fixed;
+}
+
+.dark body {
+  background-image:
+    radial-gradient(circle at top right, rgba(43, 101, 243, 0.15) 0%, transparent 40%),
+    radial-gradient(circle at bottom left, rgba(168, 85, 247, 0.1) 0%, transparent 40%);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-700 rounded-full;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-modal {
+  animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-list-item {
+  opacity: 0;
+  animation: slideUpFade 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+[contenteditable]:empty:before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  pointer-events: none;
+  display: block;
+}
+
+[contenteditable] {
+  outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}

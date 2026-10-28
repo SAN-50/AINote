@@ -1,0 +1,28 @@
+# Changelog
+
+## [1.1.0] - 2026-10-28
+
+### Security (보안 강화)
+- **DOMPurify 기반 HTML 정제 도입**: 노트 저장, 불러오기, 붙여넣기, 보기 모달 렌더링 전 과정에서 허용된 서식 태그(`b, strong, i, em, u, span, font, br, div, p`)와 안전한 인라인 스타일(`font-size`, `font-family`, `font-weight`, `font-style`, `text-decoration`)만 통과시키도록 적용.
+- **검색 및 목록 렌더링 XSS 차단**: `document.createElement('div').innerHTML` 대신 비활성 문서(`DOMParser`) 기반 `getPlainText`로 교체하여 `<img onerror>` 등 스크립트가 실행되지 않도록 수정.
+- **외부 CDN 의존성 완전 제거 (오프라인 완벽 지원)**: React, ReactDOM, Tailwind CSS, Babel CDN 스크립트를 모두 제거하고 Vite + 로컬 npm 패키지로 사전 번들링.
+- **엄격한 CSP(Content-Security-Policy) 적용**: `default-src 'self'; script-src 'self'` 정책으로 외부 스크립트 및 데이터 유출 차단.
+- **Electron 보안 가드 및 Fuses 적용**: `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, 외부 URL 탐색(`will-navigate`) 차단, 새 창 열기 시 안전한 외부 브라우저(`shell.openExternal`) 연결, 패키징 시 `@electron/fuses`(`RunAsNode` 비활성화, `OnlyLoadAppFromAsar` 활성화 등) 적용.
+- **Electron 최신 버전 업그레이드**: 지원 종료된 Electron 33에서 최신 안정 버전(45.1.0)으로 업그레이드 (`npm audit` 취약점 0건).
+
+### Data Storage (데이터 저장 및 백업)
+- **안전한 로컬 파일 저장소(`notes-data.json`)**: 용량 제한(5~10MB)이 있는 `localStorage`에서 `%APPDATA%\ainote\notes-data.json` 파일 저장 방식으로 이전.
+- **원자적 파일 쓰기(Atomic Write) 및 일별 자동 롤링 백업**: 임시 파일 기록 후 이름 변경 방식으로 저장 중 강제 종료 시 파일 손상을 방지하고, `backups/` 폴더에 최근 10일간의 일별 자동 백업을 유지.
+- **기존 데이터 자동 마이그레이션 및 손상 파일 보호**: 첫 실행 시 기존 `localStorage`의 노트를 자동으로 새 파일 저장소로 이전하며, JSON 파싱 실패 시 빈 배열로 덮어쓰지 않고 `.corrupt-*.bak` 파일로 보존.
+- **백업 내보내기 / 가져오기 기능**: 설정 메뉴에서 JSON 파일로 전체 노트를 내보내거나 가져와 병합할 수 있는 기능 추가.
+- **UUID 기반 ID 및 작성 중 임시 저장(Draft)**: `crypto.randomUUID()`로 ID 충돌을 방지하고, 작성 중인 노트를 자동 임시 저장.
+
+### Installer & Auto-Update (설치 및 자동 업데이트)
+- **electron-builder (NSIS) 단일 설치 프로그램 통합**: 바탕화면·시작 메뉴 바로가기 생성, 제어판 프로그램 추가/제거 등록, 설치 경로 선택, 커스텀 아이콘(`build/icon.ico`), 내부 실행 파일명 ASCII(`TreeNote.exe`) 및 표시 이름(`나무 노트`) 분리 적용.
+- **GitHub Releases 기반 자동 업데이트(`electron-updater`) 연동**: 앱 시작 시 백그라운드 업데이트 확인, 설정 메뉴 내 수동 업데이트 확인, 업데이트 적용 전 자동 데이터 백업 지원.
+
+### Quality & UX (품질 및 사용성 개선)
+- 다크 모드 설정 영구 저장 및 윈도우 네이티브 타이틀바 테마 실시간 동기화.
+- 내용을 모두 지운 뒤 `<br>` 태그가 남아 배경 흐림 효과가 풀리지 않던 버그 수정.
+- 편집 모달에서 수정 중 닫거나 `Esc` 키를 누를 때 변경사항 손실 방지 확인창 추가.
+- 우클릭 컨텍스트 메뉴(실행 취소, 잘라내기, 복사, 붙여넣기, 모두 선택) 및 `ErrorBoundary` 추가.
