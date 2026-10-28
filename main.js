@@ -25,14 +25,8 @@ if (!gotSingleLock) {
   process.exit(0);
 }
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const MAX_BACKUPS = 10;
-
-// TREECLIP 라이센스 코드의 SHA-256 해시 (TREE-CHO-8547, TREE-KIM-1128)
-const VALID_LICENSE_HASHES = new Set([
-  crypto.createHash('sha256').update('TREE-CHO-8547').digest('hex'),
-  crypto.createHash('sha256').update('TREE-KIM-1128').digest('hex')
-]);
 
 let mainWindow = null;
 
@@ -42,6 +36,24 @@ function getNotesFilePath() {
 
 function getBackupDirPath() {
   return path.join(app.getPath('userData'), 'backups');
+}
+
+function hashPasswordWithSalt(password, saltHex) {
+  const salt = saltHex || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPasswordWithHash(password, saltHex, expectedHashHex) {
+  if (!password || !saltHex || !expectedHashHex) return false;
+  try {
+    const computed = crypto.scryptSync(String(password), saltHex, 64);
+    const expected = Buffer.from(expectedHashHex, 'hex');
+    if (computed.length !== expected.length) return false;
+    return crypto.timingSafeEqual(computed, expected);
+  } catch (_e) {
+    return false;
+  }
 }
 
 function normalizeTags(rawTags) {
@@ -125,7 +137,7 @@ function normalizeTempItem(raw) {
   };
 }
 
-function migratePayload(data) {
+function migratePayload(data, existingSecurity) {
   if (!data || typeof data !== 'object') {
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -135,8 +147,11 @@ function migratePayload(data) {
       settings: {
         isDark: true,
         blurEnabled: true,
-        licenseLockEnabled: false,
-        licenseActivated: true
+        lockOnStartup: false
+      },
+      security: existingSecurity || {
+        passwordSalt: '',
+        passwordHash: ''
       },
       draft: null
     };
@@ -168,6 +183,19 @@ function migratePayload(data) {
       ? data.copyLog
       : {};
 
+  const security =
+    existingSecurity ||
+    (data.security && typeof data.security === 'object'
+      ? {
+          passwordSalt:
+            typeof data.security.passwordSalt === 'string' ? data.security.passwordSalt : '',
+          passwordHash:
+            typeof data.security.passwordHash === 'string' ? data.security.passwordHash : ''
+        }
+      : { passwordSalt: '', passwordHash: '' });
+
+  const hasPassword = Boolean(security.passwordSalt && security.passwordHash);
+
   const settings = {
     isDark:
       data.settings && typeof data.settings.isDark === 'boolean'
@@ -177,14 +205,12 @@ function migratePayload(data) {
       data.settings && typeof data.settings.blurEnabled === 'boolean'
         ? data.settings.blurEnabled
         : true,
-    licenseLockEnabled:
-      data.settings && typeof data.settings.licenseLockEnabled === 'boolean'
-        ? data.settings.licenseLockEnabled
-        : false,
-    licenseActivated:
-      data.settings && typeof data.settings.licenseActivated === 'boolean'
-        ? data.settings.licenseActivated
-        : true
+    lockOnStartup:
+      hasPassword &&
+      data.settings &&
+      typeof data.settings.lockOnStartup === 'boolean'
+        ? data.settings.lockOnStartup
+        : false
   };
 
   const draft =
@@ -208,6 +234,7 @@ function migratePayload(data) {
     tempQueue,
     copyLog,
     settings,
+    security,
     draft
   };
 }
@@ -247,7 +274,7 @@ function createDailyBackupIfNeeded(dataObj) {
   }
 }
 
-function loadStoredData() {
+function loadStoredDataInternal() {
   const filePath = getNotesFilePath();
   if (!fs.existsSync(filePath)) {
     return {
@@ -282,10 +309,32 @@ function loadStoredData() {
   }
 }
 
-// 안전한 네이티브 클립보드 읽기 (파일 탐색기 복사 이미지 + 일반 클립보드 이미지 + 텍스트)
+function toRendererSafeResponse(stored) {
+  const hasPassword = Boolean(
+    stored.data?.security?.passwordSalt && stored.data?.security?.passwordHash
+  );
+  return {
+    exists: stored.exists,
+    corrupted: stored.corrupted,
+    corruptPath: stored.corruptPath,
+    error: stored.error,
+    data: {
+      schemaVersion: stored.data.schemaVersion,
+      notes: stored.data.notes,
+      tempQueue: stored.data.tempQueue,
+      copyLog: stored.data.copyLog,
+      settings: {
+        ...stored.data.settings,
+        hasPassword
+      },
+      draft: stored.data.draft
+    }
+  };
+}
+
+// 안전한 네이티브 클립보드 읽기
 function readNativeClipboard() {
   try {
-    // 1) 윈도우 탐색기에서 복사한 이미지 파일(FileNameW) 확인
     const fileBuf = clipboard.readBuffer('FileNameW');
     if (fileBuf && fileBuf.length > 0) {
       const filePath = fileBuf
@@ -321,7 +370,6 @@ function readNativeClipboard() {
       }
     }
 
-    // 2) 클립보드에 직접 들어있는 비트맵/스크린샷 이미지 확인
     const img = clipboard.readImage();
     if (img && !img.isEmpty()) {
       const dataUrl = img.toDataURL();
@@ -339,7 +387,6 @@ function readNativeClipboard() {
       }
     }
 
-    // 3) 일반 텍스트 확인
     const text = clipboard.readText();
     if (text && text.trim().length > 0) {
       const firstLine = text.trim().split(/\r?\n/)[0].slice(0, 40);
@@ -364,7 +411,11 @@ function readNativeClipboard() {
 function writeNativeClipboard(payload) {
   try {
     if (!payload || typeof payload !== 'object') return { ok: false };
-    if (payload.imageDataUrl && typeof payload.imageDataUrl === 'string' && payload.imageDataUrl.startsWith('data:image/')) {
+    if (
+      payload.imageDataUrl &&
+      typeof payload.imageDataUrl === 'string' &&
+      payload.imageDataUrl.startsWith('data:image/')
+    ) {
       const nImg = nativeImage.createFromDataURL(payload.imageDataUrl);
       if (!nImg.isEmpty()) {
         clipboard.writeImage(nImg);
@@ -473,15 +524,103 @@ app.on('second-instance', () => {
 
 // IPC 핸들러 등록
 ipcMain.handle('notes:load', async () => {
-  return loadStoredData();
+  const stored = loadStoredDataInternal();
+  return toRendererSafeResponse(stored);
 });
 
 ipcMain.handle('notes:save', async (_event, payload) => {
   try {
-    const cleanData = migratePayload(payload);
+    const existing = loadStoredDataInternal();
+    const cleanData = migratePayload(payload, existing.data.security);
     writeAtomicJson(getNotesFilePath(), cleanData);
     createDailyBackupIfNeeded(cleanData);
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('lock:set-password', async (_event, payload) => {
+  try {
+    const { currentPassword, newPassword, lockOnStartup } = payload || {};
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 2) {
+      return { ok: false, error: '비밀번호는 2자 이상 입력해 주세요.' };
+    }
+
+    const stored = loadStoredDataInternal();
+    const existingSec = stored.data.security || { passwordSalt: '', passwordHash: '' };
+    const hadPassword = Boolean(existingSec.passwordSalt && existingSec.passwordHash);
+
+    if (hadPassword) {
+      const validCurrent = verifyPasswordWithHash(
+        currentPassword,
+        existingSec.passwordSalt,
+        existingSec.passwordHash
+      );
+      if (!validCurrent) {
+        return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
+      }
+    }
+
+    const { salt, hash } = hashPasswordWithSalt(newPassword.trim());
+    const nextData = {
+      ...stored.data,
+      security: {
+        passwordSalt: salt,
+        passwordHash: hash
+      },
+      settings: {
+        ...stored.data.settings,
+        lockOnStartup: typeof lockOnStartup === 'boolean' ? lockOnStartup : true
+      }
+    };
+
+    writeAtomicJson(getNotesFilePath(), nextData);
+    return {
+      ok: true,
+      hasPassword: true,
+      lockOnStartup: nextData.settings.lockOnStartup
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('lock:verify-password', async (_event, password) => {
+  const stored = loadStoredDataInternal();
+  const sec = stored.data.security || { passwordSalt: '', passwordHash: '' };
+  if (!sec.passwordSalt || !sec.passwordHash) {
+    return { ok: true };
+  }
+  const matched = verifyPasswordWithHash(password, sec.passwordSalt, sec.passwordHash);
+  return { ok: matched };
+});
+
+ipcMain.handle('lock:remove-password', async (_event, currentPassword) => {
+  try {
+    const stored = loadStoredDataInternal();
+    const sec = stored.data.security || { passwordSalt: '', passwordHash: '' };
+    if (sec.passwordSalt && sec.passwordHash) {
+      const matched = verifyPasswordWithHash(
+        currentPassword,
+        sec.passwordSalt,
+        sec.passwordHash
+      );
+      if (!matched) {
+        return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
+      }
+    }
+
+    const nextData = {
+      ...stored.data,
+      security: { passwordSalt: '', passwordHash: '' },
+      settings: {
+        ...stored.data.settings,
+        lockOnStartup: false
+      }
+    };
+    writeAtomicJson(getNotesFilePath(), nextData);
+    return { ok: true, hasPassword: false, lockOnStartup: false };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -495,16 +634,10 @@ ipcMain.handle('clipboard:write', async (_event, payload) => {
   return writeNativeClipboard(payload);
 });
 
-ipcMain.handle('license:verify', async (_event, rawCode) => {
-  if (!rawCode || typeof rawCode !== 'string') return { ok: false };
-  const normalized = rawCode.trim().toUpperCase();
-  const digest = crypto.createHash('sha256').update(normalized).digest('hex');
-  return { ok: VALID_LICENSE_HASHES.has(digest) };
-});
-
 ipcMain.handle('notes:export', async (_event, payload) => {
   try {
-    const cleanData = migratePayload(payload);
+    const existing = loadStoredDataInternal();
+    const cleanData = migratePayload(payload, { passwordSalt: '', passwordHash: '' });
     const defaultName = `나무노트_백업_${new Date().toISOString().slice(0, 10)}.json`;
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: '노트 및 클립 백업 내보내기',
@@ -514,7 +647,11 @@ ipcMain.handle('notes:export', async (_event, payload) => {
     if (canceled || !filePath) return { ok: false, canceled: true };
 
     writeAtomicJson(filePath, {
-      ...cleanData,
+      schemaVersion: cleanData.schemaVersion,
+      notes: cleanData.notes || existing.data.notes,
+      tempQueue: cleanData.tempQueue,
+      copyLog: cleanData.copyLog,
+      settings: cleanData.settings,
       exportedAt: new Date().toISOString(),
       appVersion: app.getVersion()
     });
@@ -536,7 +673,8 @@ ipcMain.handle('notes:import', async () => {
     }
     const raw = fs.readFileSync(filePaths[0], 'utf8');
     const parsed = JSON.parse(raw);
-    const migrated = migratePayload(parsed);
+    const existing = loadStoredDataInternal();
+    const migrated = migratePayload(parsed, existing.data.security);
     return { ok: true, data: migrated };
   } catch (err) {
     return { ok: false, error: `백업 파일을 읽을 수 없습니다: ${err.message}` };
@@ -545,7 +683,11 @@ ipcMain.handle('notes:import', async () => {
 
 ipcMain.handle('theme:set', (_event, isDark) => {
   nativeTheme.themeSource = isDark ? 'dark' : 'light';
-  if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.setTitleBarOverlay === 'function') {
+  if (
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    typeof mainWindow.setTitleBarOverlay === 'function'
+  ) {
     try {
       mainWindow.setTitleBarOverlay({
         color: isDark ? '#111113' : '#f5f3f0',
@@ -601,7 +743,7 @@ function setupAutoUpdater() {
     sendStatus({ state: 'error', message: `업데이트 확인 실패: ${err?.message || '오류'}` });
   });
   autoUpdater.on('update-downloaded', (info) => {
-    const current = loadStoredData();
+    const current = loadStoredDataInternal();
     if (current.exists && !current.corrupted) {
       createDailyBackupIfNeeded(current.data);
     }
@@ -638,14 +780,15 @@ function setupAutoUpdater() {
 }
 
 app.whenReady().then(() => {
-  const stored = loadStoredData();
+  const stored = loadStoredDataInternal();
   const isDarkInitial = stored.data.settings.isDark;
   nativeTheme.themeSource = isDarkInitial ? 'dark' : 'light';
   createWindow(isDarkInitial);
   setupAutoUpdater();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(nativeTheme.shouldUseDarkColors);
+    if (BrowserWindow.getAllWindows().length === 0)
+      createWindow(nativeTheme.shouldUseDarkColors);
   });
 });
 

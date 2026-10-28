@@ -21,7 +21,7 @@ import {
 } from './components/Icons';
 import { CustomSelect } from './components/CustomSelect';
 import { FormattingBar } from './components/FormattingBar';
-import { LicenseLockModal } from './components/LicenseLockModal';
+import { PasswordLockScreen, PasswordSetupModal } from './components/LicenseLockModal';
 import { MonitorPanel, getTempTimeInfo } from './components/MonitorPanel';
 
 const api = typeof window !== 'undefined' ? window.treeNoteAPI : null;
@@ -92,11 +92,13 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [appVersion, setAppVersion] = useState('1.2.0');
 
-  // Settings & Lock State
+  // Settings & Password Lock State
   const [isDark, setIsDark] = useState(true);
   const [blurEnabled, setBlurEnabled] = useState(true);
-  const [licenseLockEnabled, setLicenseLockEnabled] = useState(false);
-  const [licenseActivated, setLicenseActivated] = useState(true);
+  const [hasPassword, setHasPassword] = useState(false);
+  const [lockOnStartup, setLockOnStartup] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   // Workspace & Composer State
@@ -194,8 +196,10 @@ export default function App() {
         const initialCopyLog = res.data?.copyLog || {};
         const initialDark = res.data?.settings?.isDark ?? (legacyDark ?? true);
         const initialBlur = res.data?.settings?.blurEnabled ?? (legacyBlur ?? true);
-        const initialLockEnabled = res.data?.settings?.licenseLockEnabled ?? false;
-        const initialLockActivated = res.data?.settings?.licenseActivated ?? true;
+        const initialHasPassword = Boolean(res.data?.settings?.hasPassword);
+        const initialLockOnStartup = initialHasPassword
+          ? Boolean(res.data?.settings?.lockOnStartup)
+          : false;
         const initialDraft = res.data?.draft || null;
 
         if (!res.exists && Array.isArray(legacyNotes) && legacyNotes.length > 0) {
@@ -221,8 +225,7 @@ export default function App() {
             settings: {
               isDark: initialDark,
               blurEnabled: initialBlur,
-              licenseLockEnabled: initialLockEnabled,
-              licenseActivated: initialLockActivated
+              lockOnStartup: initialLockOnStartup
             },
             draft: null
           });
@@ -243,8 +246,9 @@ export default function App() {
         setCopyLog(initialCopyLog);
         setIsDark(initialDark);
         setBlurEnabled(initialBlur);
-        setLicenseLockEnabled(initialLockEnabled);
-        setLicenseActivated(initialLockEnabled ? initialLockActivated : true);
+        setHasPassword(initialHasPassword);
+        setLockOnStartup(initialLockOnStartup);
+        setIsLocked(initialHasPassword && initialLockOnStartup);
 
         if (
           initialDraft &&
@@ -307,8 +311,7 @@ export default function App() {
       nextCopyLog,
       nextDark,
       nextBlur,
-      nextLockEnabled,
-      nextLockActivated,
+      nextLockOnStartup,
       nextDraft
     ) => {
       if (!isLoaded || corruptWarning) return;
@@ -319,8 +322,7 @@ export default function App() {
         settings: {
           isDark: nextDark,
           blurEnabled: nextBlur,
-          licenseLockEnabled: nextLockEnabled,
-          licenseActivated: nextLockActivated
+          lockOnStartup: nextLockOnStartup
         },
         draft: nextDraft
       };
@@ -357,8 +359,7 @@ export default function App() {
         copyLog,
         isDark,
         blurEnabled,
-        licenseLockEnabled,
-        licenseActivated,
+        lockOnStartup,
         draftObj
       );
     }, 250);
@@ -372,8 +373,7 @@ export default function App() {
     copyLog,
     isDark,
     blurEnabled,
-    licenseLockEnabled,
-    licenseActivated,
+    lockOnStartup,
     title,
     content,
     category,
@@ -836,13 +836,13 @@ export default function App() {
     showToast('노트가 수정되었습니다 ✓', 'success');
   };
 
-  // 9. 라이센스 잠금 검증
-  const handleVerifyLicense = async (inputCode) => {
-    if (api && api.verifyLicense) {
-      const res = await api.verifyLicense(inputCode);
+  // 9. 개인 비밀번호 설정 / 검증 / 해제
+  const handleVerifyPassword = async (inputPassword) => {
+    if (api && api.verifyPassword) {
+      const res = await api.verifyPassword(inputPassword);
       if (res?.ok) {
-        setLicenseActivated(true);
-        showToast('라이센스 인증이 완료되었습니다 ✓', 'success');
+        setIsLocked(false);
+        showToast('잠금이 해제되었습니다 ✓', 'success');
         return true;
       }
       return false;
@@ -850,9 +850,36 @@ export default function App() {
     return false;
   };
 
+  const handleSavePassword = async (payload) => {
+    if (!api || !api.setPassword) return { ok: false, error: '지원되지 않는 환경입니다.' };
+    const res = await api.setPassword(payload);
+    if (res?.ok) {
+      setHasPassword(true);
+      setLockOnStartup(Boolean(res.lockOnStartup));
+      showToast('개인 비밀번호가 안전하게 저장되었습니다 ✓', 'success');
+    }
+    return res;
+  };
+
+  const handleRemovePassword = async (currentPassword) => {
+    if (!api || !api.removePassword) return { ok: false, error: '지원되지 않는 환경입니다.' };
+    const res = await api.removePassword(currentPassword);
+    if (res?.ok) {
+      setHasPassword(false);
+      setLockOnStartup(false);
+      setIsLocked(false);
+      showToast('비밀번호 잠금이 해제되었습니다 ✓', 'info');
+    }
+    return res;
+  };
+
   const handleLockNow = () => {
-    setLicenseLockEnabled(true);
-    setLicenseActivated(false);
+    if (!hasPassword) {
+      setShowSettings(false);
+      setShowPasswordModal(true);
+      return;
+    }
+    setIsLocked(true);
     setShowSettings(false);
   };
 
@@ -863,7 +890,7 @@ export default function App() {
       notes,
       tempQueue,
       copyLog,
-      settings: { isDark, blurEnabled, licenseLockEnabled, licenseActivated }
+      settings: { isDark, blurEnabled, lockOnStartup }
     });
     if (res?.ok) {
       showToast('백업 파일을 성공적으로 저장했습니다 ✓', 'success');
@@ -978,15 +1005,23 @@ export default function App() {
       });
   }, [notesWithPlainCache, searchQuery, filterCategory, pinnedOnly, sortOrder]);
 
-  const isLocked = licenseLockEnabled && !licenseActivated;
-
   return (
     <>
       {/* 상단 드래그 타이틀바 영역 */}
       <div className="drag-titlebar" />
 
-      {/* 라이센스 잠금 모달 */}
-      <LicenseLockModal isLocked={isLocked} onVerify={handleVerifyLicense} />
+      {/* 개인 비밀번호 잠금 화면 */}
+      <PasswordLockScreen isLocked={isLocked} onVerify={handleVerifyPassword} />
+
+      {/* 비밀번호 설정/변경/해제 모달 */}
+      <PasswordSetupModal
+        isOpen={showPasswordModal}
+        onClose={() => setShowPasswordModal(false)}
+        hasPassword={hasPassword}
+        lockOnStartup={lockOnStartup}
+        onSavePassword={handleSavePassword}
+        onRemovePassword={handleRemovePassword}
+      />
 
       {/* 토스트 알림 */}
       {statusBanner && (
@@ -1075,36 +1110,55 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* 라이센스 잠금 토글 */}
+                  {/* 개인 비밀번호 잠금 설정 */}
                   <div className="flex flex-col gap-2 bg-gray-50 dark:bg-black/25 p-3 rounded-xl border border-gray-100 dark:border-gray-800">
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col">
                         <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
-                          시작 시 라이센스 잠금
+                          개인 비밀번호 잠금
                         </span>
-                        <span className="text-[11px] text-gray-400">코드 입력 후 앱 열기</span>
+                        <span className="text-[11px] text-gray-400">
+                          {hasPassword ? '비밀번호 설정됨' : '미설정 (누구나 바로 사용)'}
+                        </span>
                       </div>
+                      {hasPassword && (
+                        <button
+                          type="button"
+                          onClick={() => setLockOnStartup(!lockOnStartup)}
+                          title="앱 시작 시 자동 잠금 켜기/끄기"
+                          className={`w-11 h-6 rounded-full transition-colors relative ${
+                            lockOnStartup ? 'bg-samsung-blue' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <div
+                            className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${
+                              lockOnStartup ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => setLicenseLockEnabled(!licenseLockEnabled)}
-                        className={`w-11 h-6 rounded-full transition-colors relative ${
-                          licenseLockEnabled ? 'bg-samsung-blue' : 'bg-gray-300 dark:bg-gray-600'
-                        }`}
+                        onClick={() => {
+                          setShowSettings(false);
+                          setShowPasswordModal(true);
+                        }}
+                        className="flex-1 py-1.5 px-2.5 rounded-lg bg-white dark:bg-[#2A2A30] hover:bg-gray-100 dark:hover:bg-[#35353D] text-gray-700 dark:text-gray-200 text-xs font-bold border border-gray-200 dark:border-gray-700 transition-colors"
                       >
-                        <div
-                          className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${
-                            licenseLockEnabled ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
+                        {hasPassword ? '비밀번호 변경/해제' : '비밀번호 설정하기'}
                       </button>
+                      {hasPassword && (
+                        <button
+                          type="button"
+                          onClick={handleLockNow}
+                          className="py-1.5 px-3 rounded-lg bg-samsung-blue/15 hover:bg-samsung-blue text-samsung-blue dark:text-blue-400 hover:text-white text-xs font-bold transition-colors"
+                        >
+                          🔒 지금 잠금
+                        </button>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleLockNow}
-                      className="w-full py-1.5 rounded-lg bg-gray-200/80 dark:bg-[#2F2F37] hover:bg-samsung-blue hover:text-white text-gray-700 dark:text-gray-200 text-xs font-bold transition-colors"
-                    >
-                      🔒 지금 화면 잠그기
-                    </button>
                   </div>
 
                   {/* 백업 내보내기 / 가져오기 */}
