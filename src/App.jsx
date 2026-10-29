@@ -1391,13 +1391,28 @@ export default function App() {
                       {updateInfo?.message || '현재 최신 버전을 사용 중입니다.'}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleManualUpdateCheck}
-                    className="py-2 px-3.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 hover:text-white text-zinc-700 dark:text-zinc-200 text-xs font-bold border border-line-light dark:border-line-dark transition-colors shrink-0"
-                  >
-                    업데이트 확인
-                  </button>
+                  {updateInfo?.state === 'downloaded' ? (
+                    <button
+                      type="button"
+                      onClick={() => api?.installUpdate()}
+                      className="py-2 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors shrink-0 shadow-sm"
+                    >
+                      지금 업데이트 적용
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleManualUpdateCheck}
+                      disabled={updateInfo?.state === 'checking' || updateInfo?.state === 'available'}
+                      className="py-2 px-3.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 hover:text-white disabled:opacity-50 text-zinc-700 dark:text-zinc-200 text-xs font-bold border border-line-light dark:border-line-dark transition-colors shrink-0"
+                    >
+                      {updateInfo?.state === 'checking'
+                        ? '확인 중...'
+                        : updateInfo?.state === 'available'
+                        ? '다운로드 중...'
+                        : '업데이트 확인'}
+                    </button>
+                  )}
                 </div>
               </>
             )}
@@ -1618,16 +1633,18 @@ export default function App() {
             </div>
           )}
 
-          {updateInfo && updateInfo.state === 'downloaded' && (
+          {updateInfo && (updateInfo.state === 'available' || updateInfo.state === 'downloaded') && (
             <div className="p-3.5 rounded-xl bg-blue-600/10 border border-blue-600/30 text-blue-600 dark:text-blue-300 text-xs font-bold flex justify-between items-center gap-3">
-              <span>{updateInfo.message}</span>
-              <button
-                type="button"
-                onClick={() => api?.installUpdate()}
-                className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shrink-0"
-              >
-                지금 재시작하여 업데이트
-              </button>
+              <span>🔄 {updateInfo.message}</span>
+              {updateInfo.state === 'downloaded' && (
+                <button
+                  type="button"
+                  onClick={() => api?.installUpdate()}
+                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shrink-0 shadow-sm"
+                >
+                  지금 재시작하여 업데이트
+                </button>
+              )}
             </div>
           )}
 

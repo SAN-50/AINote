@@ -72,7 +72,8 @@
       {
         "provider": "github",
         "owner": "SAN-50",
-        "repo": "AINote"
+        "repo": "AINote",
+        "releaseType": "release"
       }
     ]
   }
