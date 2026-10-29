@@ -441,12 +441,12 @@ function createWindow(isDarkInitial) {
     height: 900,
     minWidth: 820,
     minHeight: 600,
-    backgroundColor: isDarkInitial ? '#111113' : '#f5f3f0',
+    backgroundColor: isDarkInitial ? '#0F1014' : '#F6F5F2',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: isDarkInitial ? '#111113' : '#f5f3f0',
-      symbolColor: isDarkInitial ? '#ececee' : '#1a1a1a',
+      color: isDarkInitial ? '#0F1014' : '#F6F5F2',
+      symbolColor: isDarkInitial ? '#F3F4F6' : '#18181B',
       height: 34
     },
     webPreferences: {
@@ -690,8 +690,8 @@ ipcMain.handle('theme:set', (_event, isDark) => {
   ) {
     try {
       mainWindow.setTitleBarOverlay({
-        color: isDark ? '#111113' : '#f5f3f0',
-        symbolColor: isDark ? '#ececee' : '#1a1a1a',
+        color: isDark ? '#0F1014' : '#F6F5F2',
+        symbolColor: isDark ? '#F3F4F6' : '#18181B',
         height: 34
       });
     } catch (_e) {

@@ -111,82 +111,78 @@ export function FormattingBar({ editorRef, onFormatChange }) {
     notifyContentUpdated();
   };
 
-  const btnBase = 'px-2.5 py-1 rounded-lg text-sm font-bold border transition-all active:scale-95 flex items-center gap-1';
-  const btnOn = 'bg-samsung-blue text-white border-samsung-blue shadow-md';
-  const btnOff = 'bg-white dark:bg-[#2A2A2C] border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700';
+  const btnBase =
+    'w-7 h-7 rounded-lg text-xs font-bold transition-colors flex items-center justify-center select-none';
+  const btnOn = 'bg-blue-600 text-white shadow-sm';
+  const btnOff =
+    'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/70 dark:hover:bg-white/10';
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-gray-50/80 dark:bg-black/20 rounded-xl mb-3 border border-gray-100 dark:border-gray-800 shadow-sm transition-all relative z-50 flex-wrap">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1">글꼴</span>
-        <select
-          value={currentFont}
-          onMouseDown={saveSelection}
-          onChange={(e) => applyFont(e.target.value)}
-          className="bg-gray-100/80 dark:bg-[#2A2A2C]/80 border-none rounded-xl text-sm font-bold text-gray-800 dark:text-gray-200 cursor-pointer outline-none px-4 py-2.5 hover:bg-gray-200 dark:hover:bg-[#353538] transition-all min-w-[110px] shadow-sm"
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-muted-light dark:bg-muted-dark rounded-xl border border-line-light dark:border-line-dark flex-wrap">
+      <select
+        value={currentFont}
+        onMouseDown={saveSelection}
+        onChange={(e) => applyFont(e.target.value)}
+        aria-label="글꼴 선택"
+        className="bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-lg text-xs font-semibold text-zinc-800 dark:text-zinc-200 cursor-pointer outline-none px-2.5 py-1 hover:border-zinc-400 dark:hover:border-zinc-500 transition-colors"
+      >
+        {FONTS.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+      </select>
+
+      <select
+        value={currentSize}
+        onMouseDown={saveSelection}
+        onChange={(e) => applySize(e.target.value)}
+        aria-label="글자 크기 선택"
+        className="bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-lg text-xs font-semibold text-zinc-800 dark:text-zinc-200 cursor-pointer outline-none px-2 py-1 hover:border-zinc-400 dark:hover:border-zinc-500 transition-colors"
+      >
+        {FONT_SIZES.map((s) => (
+          <option key={s} value={s}>
+            {s}px
+          </option>
+        ))}
+      </select>
+
+      <div className="w-px h-4 bg-line-light dark:bg-line-dark mx-1" />
+
+      <div className="flex items-center gap-0.5">
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            exec('bold');
+          }}
+          title="굵게 (Ctrl+B)"
+          className={`${btnBase} font-extrabold ${isBoldOn ? btnOn : btnOff}`}
         >
-          {FONTS.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="w-px h-8 bg-gray-200 dark:bg-gray-700 mx-1 self-end mb-1" />
-
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1">스타일</span>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              exec('bold');
-            }}
-            className={`${btnBase} font-extrabold ${isBoldOn ? btnOn : btnOff}`}
-          >
-            B
-          </button>
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              exec('italic');
-            }}
-            className={`${btnBase} italic ${isItalicOn ? btnOn : btnOff}`}
-          >
-            I
-          </button>
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              exec('underline');
-            }}
-            className={`${btnBase} underline ${isUnderlineOn ? btnOn : btnOff}`}
-          >
-            U
-          </button>
-        </div>
-      </div>
-
-      <div className="w-px h-8 bg-gray-200 dark:bg-gray-700 mx-1 self-end mb-1" />
-
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1">크기</span>
-        <select
-          value={currentSize}
-          onMouseDown={saveSelection}
-          onChange={(e) => applySize(e.target.value)}
-          className="bg-gray-100/80 dark:bg-[#2A2A2C]/80 border-none rounded-xl text-sm font-bold text-gray-800 dark:text-gray-200 cursor-pointer outline-none px-4 py-2.5 hover:bg-gray-200 dark:hover:bg-[#353538] transition-all min-w-[70px] shadow-sm"
+          B
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            exec('italic');
+          }}
+          title="기울임 (Ctrl+I)"
+          className={`${btnBase} italic font-serif ${isItalicOn ? btnOn : btnOff}`}
         >
-          {FONT_SIZES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+          I
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            exec('underline');
+          }}
+          title="밑줄 (Ctrl+U)"
+          className={`${btnBase} underline ${isUnderlineOn ? btnOn : btnOff}`}
+        >
+          U
+        </button>
       </div>
     </div>
   );

@@ -41,7 +41,6 @@ export function MonitorPanel({
   const [detectedTags, setDetectedTags] = useState('');
   const [, setTick] = useState(0);
 
-  // Refresh countdown every 60s
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60000);
     return () => clearInterval(id);
@@ -53,32 +52,34 @@ export function MonitorPanel({
   };
 
   return (
-    <section className="bg-white/80 dark:bg-samsung-darkcard/85 backdrop-blur-xl p-6 rounded-3xl shadow-lg border border-gray-200/60 dark:border-samsung-border flex flex-col gap-5 animate-modal">
+    <section className="bg-surface-light dark:bg-surface-dark p-6 rounded-[20px] shadow-sm border border-line-light dark:border-line-dark flex flex-col gap-5 animate-modal">
       {/* Header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 grid place-items-center shrink-0">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 grid place-items-center shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" />
               <polyline points="12 6 12 12 16 14" />
             </svg>
           </div>
           <div>
-            <h2 className="text-lg font-extrabold text-gray-900 dark:text-white">클립보드 자동 감지</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
+            <h2 className="text-base font-extrabold text-zinc-900 dark:text-gray-100">
+              클립보드 자동 감지
+            </h2>
+            <p className="text-xs text-zinc-500 dark:text-gray-400">
               복사한 텍스트와 이미지를 실시간으로 감지하고 72시간 임시 보관함에 수집합니다.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onToggleMonitor}
-            className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm ${
+            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors ${
               isMonitoring
                 ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                : 'bg-gradient-to-r from-samsung-blue to-purple-600 text-white hover:opacity-95'
+                : 'bg-blue-600 text-white hover:bg-blue-700'
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${isMonitoring ? 'bg-white animate-ping' : 'bg-white/70'}`} />
@@ -87,9 +88,9 @@ export function MonitorPanel({
           <button
             type="button"
             onClick={onCaptureNow}
-            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gray-100 dark:bg-[#2A2A2C] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#353538] border border-gray-200/60 dark:border-gray-700 transition-all flex items-center gap-1.5"
+            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-muted-light dark:bg-muted-dark text-zinc-700 dark:text-gray-200 hover:bg-zinc-200/70 dark:hover:bg-white/10 border border-line-light dark:border-line-dark transition-colors flex items-center gap-1.5"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
               <circle cx="12" cy="13" r="4" />
             </svg>
@@ -99,8 +100,8 @@ export function MonitorPanel({
       </div>
 
       {/* Status Bar */}
-      <div className="flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-samsung-blue/10 dark:bg-samsung-blue/15 text-samsung-blue dark:text-blue-300 text-xs font-semibold">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-300 text-xs font-medium">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600 dark:text-blue-400 shrink-0">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="16" x2="12" y2="12" />
           <line x1="12" y1="8" x2="12.01" y2="8" />
@@ -109,13 +110,13 @@ export function MonitorPanel({
       </div>
 
       {/* Detected Preview Card */}
-      <div className="p-4 rounded-2xl bg-gray-50/90 dark:bg-[#222226] border border-gray-200/70 dark:border-gray-800 flex flex-col gap-3">
+      <div className="p-4 rounded-2xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <span
-            className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
+            className={`px-2.5 py-0.5 rounded-md text-[11px] font-bold ${
               detectedClipboard
-                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20'
+                : 'bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400'
             }`}
           >
             {detectedClipboard
@@ -124,14 +125,14 @@ export function MonitorPanel({
                 : '📝 텍스트 감지됨'
               : '감지 대기 중'}
           </span>
-          <span className="text-[11px] text-gray-400">
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
             {detectedClipboard
               ? `${new Date(detectedClipboard.detectedAt).toLocaleString('ko-KR')} 감지`
               : '최근 감지 기록이 없습니다.'}
           </span>
         </div>
 
-        <h3 className="text-sm font-bold text-gray-900 dark:text-white truncate">
+        <h3 className="text-sm font-bold text-zinc-900 dark:text-gray-100 truncate">
           {detectedClipboard ? detectedClipboard.title : '새로 복사한 내용이 여기에 표시됩니다.'}
         </h3>
 
@@ -139,11 +140,13 @@ export function MonitorPanel({
           <img
             src={detectedClipboard.imageDataUrl}
             alt="클립보드 이미지 미리보기"
-            className="w-full max-h-52 object-contain rounded-xl bg-black/5 dark:bg-black/30 border border-gray-200 dark:border-gray-700"
+            className="w-full max-h-48 object-contain rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark"
           />
         ) : (
-          <p className="text-xs text-gray-600 dark:text-gray-300 line-clamp-3 whitespace-pre-wrap break-words">
-            {detectedClipboard ? detectedClipboard.content : '텍스트나 이미지를 복사(Ctrl+C)하면 자동으로 미리보기가 나타납니다.'}
+          <p className="text-xs text-zinc-600 dark:text-gray-300 line-clamp-3 whitespace-pre-wrap break-words leading-relaxed">
+            {detectedClipboard
+              ? detectedClipboard.content
+              : '텍스트나 이미지를 복사(Ctrl+C)하면 자동으로 미리보기가 나타납니다.'}
           </p>
         )}
 
@@ -152,32 +155,32 @@ export function MonitorPanel({
             type="text"
             value={detectedTags}
             onChange={(e) => setDetectedTags(e.target.value)}
-            placeholder="태그 추가 (쉼표로 구분, 예: 업무, 중요)"
-            className="flex-1 bg-white dark:bg-[#2A2A2C] border border-gray-200 dark:border-gray-700 rounded-xl px-3.5 py-2 text-xs text-gray-800 dark:text-gray-100 outline-none focus:ring-2 focus:ring-samsung-blue"
+            placeholder="#태그 추가 (쉼표로 구분)"
+            className="flex-1 bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-xl px-3.5 py-2 text-xs text-zinc-800 dark:text-gray-100 outline-none focus:border-blue-600"
           />
           <button
             type="button"
             onClick={handleSaveDetectedClick}
             disabled={!detectedClipboard}
-            className="px-4 py-2 rounded-xl bg-samsung-blue text-white text-xs font-bold hover:bg-blue-600 disabled:opacity-40 transition-all shrink-0"
+            className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-40 transition-colors shrink-0"
           >
-            노트에 바로 저장
+            노트에 저장
           </button>
         </div>
       </div>
 
       {/* 72h Temp Queue Section */}
-      <div className="pt-3 border-t border-gray-200/60 dark:border-gray-800 flex flex-col gap-3">
+      <div className="pt-4 border-t border-line-light dark:border-line-dark flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-extrabold text-gray-900 dark:text-white">
-              임시 저장 목록
+            <span className="text-sm font-extrabold text-zinc-900 dark:text-gray-100">
+              임시 보관함
             </span>
-            <span className="px-2.5 py-0.5 rounded-full bg-samsung-blue/15 text-samsung-blue dark:text-blue-400 text-xs font-bold">
-              {tempQueue.length}개
+            <span className="px-2 py-0.5 rounded-md bg-blue-600/10 text-blue-600 dark:text-blue-400 text-xs font-bold">
+              {tempQueue.length}
             </span>
-            <span className="text-[11px] text-gray-400">
-              (72시간 후 자동 만료)
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              72시간 후 자동 만료
             </span>
           </div>
 
@@ -185,23 +188,23 @@ export function MonitorPanel({
             <button
               type="button"
               onClick={onSaveAllTemp}
-              className="px-3 py-1.5 rounded-lg bg-samsung-blue text-white text-xs font-bold hover:bg-blue-600 transition-colors"
+              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-colors"
             >
               모두 저장
             </button>
             <button
               type="button"
               onClick={onClearExpiredTemp}
-              className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white text-xs font-bold transition-colors"
+              className="px-3 py-1.5 rounded-lg bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 hover:bg-red-600 hover:text-white text-xs font-semibold border border-line-light dark:border-line-dark transition-colors"
             >
-              만료 항목 삭제
+              만료 항목 정리
             </button>
           </div>
         </div>
 
         {tempQueue.length === 0 ? (
-          <div className="py-8 text-center text-gray-400 border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-2xl text-xs">
-            아직 수집된 임시 클립이 없습니다. 감지를 켜고 텍스트나 이미지를 복사해 보세요!
+          <div className="py-8 text-center text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-2xl text-xs">
+            수집된 임시 항목이 없습니다. 감지를 시작하고 복사해 보세요.
           </div>
         ) : (
           <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
@@ -210,22 +213,16 @@ export function MonitorPanel({
               return (
                 <div
                   key={item.id}
-                  className={`p-3.5 rounded-2xl bg-gray-50 dark:bg-[#222226] border border-gray-200/70 dark:border-gray-800 flex flex-col gap-2 transition-all ${
-                    info.expired ? 'opacity-50 border-red-500/30' : ''
+                  className={`p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2 transition-colors ${
+                    info.expired ? 'opacity-50' : ''
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
-                          item.kind === 'image'
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                            : 'bg-samsung-blue/15 text-samsung-blue dark:text-blue-400'
-                        }`}
-                      >
+                      <span className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 text-[10px] font-bold shrink-0 border border-line-light dark:border-line-dark">
                         {item.kind === 'image' ? '이미지' : '텍스트'}
                       </span>
-                      <span className="text-xs font-bold text-gray-800 dark:text-gray-100 truncate">
+                      <span className="text-xs font-bold text-zinc-800 dark:text-gray-100 truncate">
                         {item.title}
                       </span>
                     </div>
@@ -233,16 +230,14 @@ export function MonitorPanel({
                       <button
                         type="button"
                         onClick={() => onSaveTempItem(item.id)}
-                        className="px-2.5 py-1 rounded-lg bg-samsung-blue/10 hover:bg-samsung-blue text-samsung-blue hover:text-white text-[11px] font-bold transition-colors"
-                        title="영구 노트로 저장"
+                        className="px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 text-zinc-700 dark:text-zinc-200 hover:text-white text-[11px] font-bold border border-line-light dark:border-line-dark transition-colors"
                       >
                         저장
                       </button>
                       <button
                         type="button"
                         onClick={() => onDeleteTempItem(item.id)}
-                        className="px-2 py-1 rounded-lg bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white text-[11px] font-bold transition-colors"
-                        title="삭제"
+                        className="px-2 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-red-600 text-zinc-500 dark:text-zinc-400 hover:text-white text-[11px] font-semibold border border-line-light dark:border-line-dark transition-colors"
                       >
                         삭제
                       </button>
@@ -253,34 +248,34 @@ export function MonitorPanel({
                     <img
                       src={item.imageDataUrl}
                       alt="임시 이미지"
-                      className="max-h-20 object-contain rounded-lg bg-black/5 dark:bg-black/30 self-start"
+                      className="max-h-20 object-contain rounded-lg bg-muted-light dark:bg-muted-dark self-start border border-line-light dark:border-line-dark"
                     />
                   ) : (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 whitespace-pre-wrap break-words">
+                    <p className="text-xs text-zinc-600 dark:text-gray-400 line-clamp-2 whitespace-pre-wrap break-words">
                       {item.content}
                     </p>
                   )}
 
-                  <div className="flex items-center justify-between gap-3 pt-1">
+                  <div className="flex items-center justify-between gap-3 pt-0.5">
                     <span
-                      className={`text-[11px] font-semibold ${
+                      className={`text-[11px] font-medium ${
                         info.expired
                           ? 'text-red-500'
                           : info.expiringSoon
                           ? 'text-amber-500'
-                          : 'text-gray-400'
+                          : 'text-zinc-500 dark:text-zinc-400'
                       }`}
                     >
                       ⏱ {info.label}
                     </span>
-                    <div className="w-28 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div className="w-24 h-1.5 bg-muted-light dark:bg-muted-dark rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full ${
                           info.expired
                             ? 'bg-red-500'
                             : info.expiringSoon
                             ? 'bg-amber-500'
-                            : 'bg-gradient-to-r from-samsung-blue to-purple-500'
+                            : 'bg-blue-600'
                         }`}
                         style={{ width: `${info.percent}%` }}
                       />

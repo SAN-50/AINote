@@ -90,11 +90,11 @@ export default function App() {
   const [corruptWarning, setCorruptWarning] = useState(null);
   const [statusBanner, setStatusBanner] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
-  const [appVersion, setAppVersion] = useState('1.2.0');
+  const [appVersion, setAppVersion] = useState('1.3.0');
 
   // Settings & Password Lock State
   const [isDark, setIsDark] = useState(true);
-  const [blurEnabled, setBlurEnabled] = useState(true);
+  const [blurEnabled, setBlurEnabled] = useState(false); // 기본값: 멀미 없는 깔끔한 화면
   const [hasPassword, setHasPassword] = useState(false);
   const [lockOnStartup, setLockOnStartup] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -134,6 +134,7 @@ export default function App() {
 
   const mainEditorRef = useRef(null);
   const editEditorRef = useRef(null);
+  const searchInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const editFileInputRef = useRef(null);
   const saveTimerRef = useRef(null);
@@ -143,7 +144,7 @@ export default function App() {
     setStatusBanner({ message, type });
     setTimeout(() => {
       setStatusBanner((prev) => (prev && prev.message === message ? null : prev));
-    }, 3500);
+    }, 3200);
   }, []);
 
   // 1. 초기 데이터 로드 및 레거시 localStorage 자동 이전
@@ -195,7 +196,7 @@ export default function App() {
         const initialTempQueue = res.data?.tempQueue || [];
         const initialCopyLog = res.data?.copyLog || {};
         const initialDark = res.data?.settings?.isDark ?? (legacyDark ?? true);
-        const initialBlur = res.data?.settings?.blurEnabled ?? (legacyBlur ?? true);
+        const initialBlur = res.data?.settings?.blurEnabled ?? (legacyBlur ?? false);
         const initialHasPassword = Boolean(res.data?.settings?.hasPassword);
         const initialLockOnStartup = initialHasPassword
           ? Boolean(res.data?.settings?.lockOnStartup)
@@ -466,9 +467,7 @@ export default function App() {
     const now = new Date();
     const nowMs = now.getTime();
     const isImg = detectedClipboard.kind === 'image';
-    const safeHtml = isImg
-      ? escapePlainTextToHtml(detectedClipboard.content || '')
-      : escapePlainTextToHtml(detectedClipboard.content || '');
+    const safeHtml = escapePlainTextToHtml(detectedClipboard.content || '');
 
     const newNote = {
       id: generateId(),
@@ -574,7 +573,7 @@ export default function App() {
     showToast(`만료된 ${expiredCount}개 항목을 정리했습니다.`, 'info');
   };
 
-  // 5. 원클릭 클립보드 복사 (텍스트 & 이미지 지원 + 오늘의 복사 횟수 통계)
+  // 5. 원클릭 클립보드 복사
   const handleCopyNote = async (note, e) => {
     if (e) e.stopPropagation();
     const plain = getPlainText(note.content);
@@ -649,7 +648,6 @@ export default function App() {
     const clipboard = e.clipboardData;
     if (!clipboard) return;
 
-    // 클립보드에 이미지가 들어있는 경우 이미지 첨부 처리
     const items = clipboard.items || [];
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.startsWith('image/')) {
@@ -685,7 +683,7 @@ export default function App() {
     }
   };
 
-  // 7. 편집 모달 세팅 및 닫기 보호
+  // 7. 편집 모달 세팅 및 닫기 보호 + 키보드 단축키 (Ctrl+F, Ctrl+K, Esc)
   useEffect(() => {
     if (editingNote && editEditorRef.current) {
       editEditorRef.current.innerHTML = normalizeContentToSafeHtml(editingNote.content);
@@ -716,11 +714,18 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.key === 'Escape') {
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'f' || e.key.toLowerCase() === 'k')) {
+        if (!editingNote && !viewingNote && !showSettings && !showPasswordModal) {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }
+      } else if (e.key === 'Escape') {
         if (editingNote) {
           requestCloseEditModal();
         } else if (viewingNote) {
           setViewingNote(null);
+        } else if (showPasswordModal) {
+          setShowPasswordModal(false);
         } else if (showSettings) {
           setShowSettings(false);
         }
@@ -728,7 +733,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [editingNote, viewingNote, showSettings, requestCloseEditModal]);
+  }, [editingNote, viewingNote, showSettings, showPasswordModal, requestCloseEditModal]);
 
   // 8. 노트 추가 / 수정 / 삭제
   const resetForm = () => {
@@ -955,13 +960,25 @@ export default function App() {
     }
   };
 
-  // 11. 통계 및 필터링 계산
+  // 11. 통계, 카테고리별 개수 및 필터링 계산
   const todayCopyCount = useMemo(() => {
     const todayKey = new Date().toISOString().slice(0, 10);
     return copyLog[todayKey] || 0;
   }, [copyLog]);
 
   const pinnedNotesCount = useMemo(() => notes.filter((n) => n.pinned).length, [notes]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = { [FILTER_CATEGORIES[0]]: notes.length };
+    for (const cat of CATEGORIES) {
+      counts[cat] = 0;
+    }
+    for (const n of notes) {
+      const c = n.category || CATEGORIES[0];
+      counts[c] = (counts[c] || 0) + 1;
+    }
+    return counts;
+  }, [notes]);
 
   const plainDraftContent = useMemo(() => getPlainText(content), [content]);
   const hasInputFocusOrContent =
@@ -997,7 +1014,6 @@ export default function App() {
         return t.includes(sl) || c.includes(sl) || tg.includes(sl);
       })
       .sort((a, b) => {
-        // 상단 고정(Pinned) 항목 우선 정렬
         if (Boolean(b.pinned) !== Boolean(a.pinned)) {
           return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
         }
@@ -1010,7 +1026,7 @@ export default function App() {
       {/* 상단 드래그 타이틀바 영역 */}
       <div className="drag-titlebar" />
 
-      {/* 개인 비밀번호 잠금 화면 */}
+      {/* 개인 비밀번호 잠금 화면 (제한적 Glassmorphism 10%) */}
       <PasswordLockScreen isLocked={isLocked} onVerify={handleVerifyPassword} />
 
       {/* 비밀번호 설정/변경/해제 모달 */}
@@ -1023,218 +1039,257 @@ export default function App() {
         onRemovePassword={handleRemovePassword}
       />
 
+      {/* 중앙 환경 설정 모달 */}
+      {showSettings && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55 backdrop-blur-md"
+          onClick={() => setShowSettings(false)}
+        >
+          <div
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-md rounded-[20px] shadow-2xl border border-line-light dark:border-line-dark p-6 flex flex-col gap-4 animate-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center pb-3 border-b border-line-light dark:border-line-dark">
+              <div className="flex items-center gap-2">
+                <IconSettings />
+                <h3 className="font-extrabold text-zinc-900 dark:text-gray-100 text-base">
+                  환경 설정
+                </h3>
+                <span className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-[11px] font-bold text-zinc-500">
+                  v{appVersion}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:bg-muted-light dark:hover:bg-muted-dark"
+              >
+                <IconClose />
+              </button>
+            </div>
+
+            {/* 1. 작성 집중 디밍 효과 */}
+            <div className="flex justify-between items-center bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark">
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-zinc-800 dark:text-gray-200">
+                  작성 시 목록 디밍(Dimming) 효과
+                </span>
+                <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  글을 입력할 때 아래 목록의 투명도를 낮춰 집중도 향상
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBlurEnabled(!blurEnabled)}
+                className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${
+                  blurEnabled ? 'bg-blue-600' : 'bg-zinc-300 dark:bg-zinc-600'
+                }`}
+              >
+                <div
+                  className={`w-3.5 h-3.5 bg-white rounded-full absolute top-[3px] transition-transform ${
+                    blurEnabled ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* 2. 개인 비밀번호 잠금 설정 */}
+            <div className="flex flex-col gap-2.5 bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark">
+              <div className="flex justify-between items-center">
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-zinc-800 dark:text-gray-200">
+                    개인 비밀번호 잠금
+                  </span>
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {hasPassword ? '비밀번호 설정됨' : '미설정 (누구나 바로 사용 가능)'}
+                  </span>
+                </div>
+                {hasPassword && (
+                  <button
+                    type="button"
+                    onClick={() => setLockOnStartup(!lockOnStartup)}
+                    title="앱 시작 시 자동 잠금 켜기/끄기"
+                    className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${
+                      lockOnStartup ? 'bg-blue-600' : 'bg-zinc-300 dark:bg-zinc-600'
+                    }`}
+                  >
+                    <div
+                      className={`w-3.5 h-3.5 bg-white rounded-full absolute top-[3px] transition-transform ${
+                        lockOnStartup ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                      }`}
+                    />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowPasswordModal(true);
+                  }}
+                  className="flex-1 py-2 px-3 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark text-zinc-700 dark:text-gray-200 text-xs font-bold border border-line-light dark:border-line-dark transition-colors"
+                >
+                  {hasPassword ? '비밀번호 변경 / 해제' : '비밀번호 설정하기'}
+                </button>
+                {hasPassword && (
+                  <button
+                    type="button"
+                    onClick={handleLockNow}
+                    className="py-2 px-3.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold transition-colors"
+                  >
+                    🔒 지금 잠금
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 3. 백업 및 복원 */}
+            {api && (
+              <>
+                <div className="bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark flex flex-col gap-2">
+                  <span className="text-xs font-bold text-zinc-800 dark:text-gray-200">
+                    데이터 백업 및 복원 (JSON)
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExportBackup}
+                      className="flex-1 py-2 px-3 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark text-xs font-bold border border-line-light dark:border-line-dark transition-colors"
+                    >
+                      백업 내보내기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleImportBackup}
+                      className="flex-1 py-2 px-3 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark text-xs font-bold border border-line-light dark:border-line-dark transition-colors"
+                    >
+                      백업 가져오기
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. 소프트웨어 업데이트 */}
+                <div className="bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark flex justify-between items-center">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-bold text-zinc-800 dark:text-gray-200">
+                      소프트웨어 업데이트
+                    </span>
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {updateInfo?.message || 'GitHub Releases 자동 업데이트 연동됨'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleManualUpdateCheck}
+                    className="py-2 px-3.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 hover:text-white text-zinc-700 dark:text-zinc-200 text-xs font-bold border border-line-light dark:border-line-dark transition-colors shrink-0"
+                  >
+                    업데이트 확인
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 토스트 알림 */}
       {statusBanner && (
         <div
-          className={`fixed bottom-6 right-6 z-[9999] px-5 py-3.5 rounded-2xl shadow-2xl border text-sm font-bold animate-[slideUpFade_0.25s_ease-out] ${
+          className={`fixed bottom-6 right-6 z-[9999] px-4 py-3 rounded-xl shadow-lg border text-xs font-bold animate-[slideUpFade_0.2s_ease-out] ${
             statusBanner.type === 'error'
               ? 'bg-red-600 text-white border-red-500'
               : statusBanner.type === 'success'
               ? 'bg-emerald-600 text-white border-emerald-500'
-              : 'bg-gray-900 dark:bg-white text-white dark:text-gray-900 border-gray-700'
+              : 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-700'
           }`}
         >
           {statusBanner.message}
         </div>
       )}
 
-      {/* 전체 앱 쉘 (TREECLIP 좌측 사이드바 + 우측 메인 워크스페이스) */}
+      {/* ================= Modern Dashboard 전체 레이아웃 ================= */}
       <div
-        className={`w-[min(1440px,calc(100%-36px))] mx-auto pt-10 pb-8 min-h-screen grid grid-cols-1 lg:grid-cols-[290px_1fr] gap-5 relative z-10 transition-all ${
+        className={`w-[min(1440px,calc(100%-32px))] mx-auto pt-10 pb-8 min-h-screen grid grid-cols-1 lg:grid-cols-[268px_1fr] gap-5 relative z-10 ${
           isLocked ? 'blur-lg pointer-events-none select-none' : ''
         }`}
       >
-        {/* ================= 좌측 사이드바 (Sidebar) ================= */}
-        <aside className="bg-white/80 dark:bg-[#1C1C21]/90 backdrop-blur-2xl border border-gray-200/70 dark:border-samsung-border rounded-3xl p-6 shadow-xl flex flex-col gap-6 lg:sticky lg:top-10 lg:self-start">
-          {/* 브랜드 헤더 */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-samsung-blue to-purple-600 text-white grid place-items-center shadow-md shrink-0">
-                <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        {/* ================= 좌측 고정 사이드바 (Solid Sidebar Surface) ================= */}
+        <aside className="bg-sidebar-light dark:bg-sidebar-dark border border-line-light dark:border-line-dark rounded-[20px] p-5 flex flex-col gap-5 lg:sticky lg:top-10 lg:self-start">
+          {/* 브랜드 헤더 + 빠른 잠금 & 환경설정 버튼 */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white grid place-items-center shadow-sm shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
                   <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
                 </svg>
               </div>
               <div className="flex flex-col">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">
-                  Smart Note & Clip
+                <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                  Workspace
                 </span>
-                <h1 className="text-xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-samsung-blue to-purple-500">
+                <h1 className="text-lg font-extrabold text-zinc-900 dark:text-white tracking-tight">
                   나무 노트
                 </h1>
               </div>
             </div>
 
-            {/* 설정 버튼 */}
-            <div className="relative no-drag">
+            <div className="flex items-center gap-1 no-drag">
               <button
                 type="button"
-                onClick={() => setShowSettings(!showSettings)}
-                className="p-2.5 rounded-xl bg-gray-100/80 dark:bg-[#2A2A30] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#35353D] transition-all"
+                onClick={handleLockNow}
+                className="p-2 rounded-xl text-zinc-600 dark:text-zinc-400 hover:bg-surface-light dark:hover:bg-surface-dark hover:text-zinc-900 dark:hover:text-white transition-colors"
+                title={hasPassword ? '지금 화면 잠그기' : '비밀번호 잠금 설정'}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSettings(true)}
+                className="p-2 rounded-xl text-zinc-600 dark:text-zinc-400 hover:bg-surface-light dark:hover:bg-surface-dark hover:text-zinc-900 dark:hover:text-white transition-colors"
                 title="환경 설정"
               >
                 <IconSettings />
               </button>
-              {showSettings && (
-                <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-              )}
-              {showSettings && (
-                <div className="absolute left-0 lg:left-auto lg:right-0 top-[115%] w-[300px] bg-white/95 dark:bg-[#25252B]/95 backdrop-blur-2xl border border-gray-200/70 dark:border-gray-700 rounded-2xl shadow-2xl z-50 p-5 animate-[slideDown_0.2s_ease-out] flex flex-col gap-3">
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-bold text-gray-900 dark:text-gray-100 text-sm flex items-center gap-2">
-                      <IconSettings /> 환경 설정
-                    </h3>
-                    <span className="text-xs font-bold text-gray-400">v{appVersion}</span>
-                  </div>
-
-                  {/* 배경 흐림 토글 */}
-                  <div className="flex justify-between items-center bg-gray-50 dark:bg-black/25 p-3 rounded-xl border border-gray-100 dark:border-gray-800">
-                    <div className="flex flex-col">
-                      <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
-                        작성 집중 흐림 효과
-                      </span>
-                      <span className="text-[11px] text-gray-400">작성 중 아래 목록 아웃포커싱</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setBlurEnabled(!blurEnabled)}
-                      className={`w-11 h-6 rounded-full transition-colors relative ${
-                        blurEnabled ? 'bg-samsung-blue' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <div
-                        className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${
-                          blurEnabled ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {/* 개인 비밀번호 잠금 설정 */}
-                  <div className="flex flex-col gap-2 bg-gray-50 dark:bg-black/25 p-3 rounded-xl border border-gray-100 dark:border-gray-800">
-                    <div className="flex justify-between items-center">
-                      <div className="flex flex-col">
-                        <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
-                          개인 비밀번호 잠금
-                        </span>
-                        <span className="text-[11px] text-gray-400">
-                          {hasPassword ? '비밀번호 설정됨' : '미설정 (누구나 바로 사용)'}
-                        </span>
-                      </div>
-                      {hasPassword && (
-                        <button
-                          type="button"
-                          onClick={() => setLockOnStartup(!lockOnStartup)}
-                          title="앱 시작 시 자동 잠금 켜기/끄기"
-                          className={`w-11 h-6 rounded-full transition-colors relative ${
-                            lockOnStartup ? 'bg-samsung-blue' : 'bg-gray-300 dark:bg-gray-600'
-                          }`}
-                        >
-                          <div
-                            className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${
-                              lockOnStartup ? 'translate-x-6' : 'translate-x-1'
-                            }`}
-                          />
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowSettings(false);
-                          setShowPasswordModal(true);
-                        }}
-                        className="flex-1 py-1.5 px-2.5 rounded-lg bg-white dark:bg-[#2A2A30] hover:bg-gray-100 dark:hover:bg-[#35353D] text-gray-700 dark:text-gray-200 text-xs font-bold border border-gray-200 dark:border-gray-700 transition-colors"
-                      >
-                        {hasPassword ? '비밀번호 변경/해제' : '비밀번호 설정하기'}
-                      </button>
-                      {hasPassword && (
-                        <button
-                          type="button"
-                          onClick={handleLockNow}
-                          className="py-1.5 px-3 rounded-lg bg-samsung-blue/15 hover:bg-samsung-blue text-samsung-blue dark:text-blue-400 hover:text-white text-xs font-bold transition-colors"
-                        >
-                          🔒 지금 잠금
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 백업 내보내기 / 가져오기 */}
-                  {api && (
-                    <>
-                      <div className="bg-gray-50 dark:bg-black/25 p-3 rounded-xl border border-gray-100 dark:border-gray-800 flex flex-col gap-2">
-                        <span className="text-[11px] font-bold text-gray-400">
-                          데이터 백업 및 복원
-                        </span>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={handleExportBackup}
-                            className="flex-1 py-2 px-3 rounded-lg bg-white dark:bg-[#2A2A30] hover:bg-gray-100 dark:hover:bg-[#35353D] text-xs font-bold border border-gray-200 dark:border-gray-700"
-                          >
-                            내보내기
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleImportBackup}
-                            className="flex-1 py-2 px-3 rounded-lg bg-white dark:bg-[#2A2A30] hover:bg-gray-100 dark:hover:bg-[#35353D] text-xs font-bold border border-gray-200 dark:border-gray-700"
-                          >
-                            가져오기
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="bg-gray-50 dark:bg-black/25 p-3 rounded-xl border border-gray-100 dark:border-gray-800 flex justify-between items-center">
-                        <span className="text-[11px] font-bold text-gray-400">자동 업데이트</span>
-                        <button
-                          type="button"
-                          onClick={handleManualUpdateCheck}
-                          className="py-1.5 px-3 rounded-lg bg-samsung-blue/15 text-samsung-blue dark:text-blue-400 text-xs font-bold hover:bg-samsung-blue/25"
-                        >
-                          업데이트 확인
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
           </div>
 
-          {/* 워크스페이스 스위처 (직접 작성 vs 클립보드 자동 감지) */}
-          <nav className="flex flex-col gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1">
+          {/* 워크스페이스 전환 */}
+          <nav className="flex flex-col gap-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1 mb-0.5">
               워크스페이스
             </span>
             <button
               type="button"
               onClick={() => setWorkspace('composer')}
-              className={`w-full px-4 py-3 rounded-2xl text-sm font-bold flex items-center gap-3 transition-all ${
+              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2.5 transition-colors border ${
                 workspace === 'composer'
-                  ? 'bg-samsung-blue/15 text-samsung-blue dark:text-blue-400 border border-samsung-blue/25 shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5'
+                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
+                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
               }`}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14" />
                 <path d="M5 12h14" />
               </svg>
-              <span>노트·클립 직접 작성</span>
+              <span>노트·클립 작성</span>
             </button>
 
             <button
               type="button"
               onClick={() => setWorkspace('monitor')}
-              className={`w-full px-4 py-3 rounded-2xl text-sm font-bold flex items-center justify-between transition-all ${
+              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors border ${
                 workspace === 'monitor'
-                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5'
+                  ? 'bg-surface-light dark:bg-surface-dark text-emerald-600 dark:text-emerald-400 border-line-light dark:border-line-dark shadow-sm'
+                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <div className="flex items-center gap-2.5">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
                 </svg>
@@ -1245,7 +1300,7 @@ export default function App() {
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
                 )}
                 {tempQueue.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 text-[11px] font-extrabold">
+                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-extrabold">
                     {tempQueue.length}
                   </span>
                 )}
@@ -1253,82 +1308,98 @@ export default function App() {
             </button>
           </nav>
 
-          {/* 통계 대시보드 (전체 / 고정 / 오늘 복사) */}
-          <section className="flex flex-col gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1">
-              통계
+          {/* Bento 미니 통계 대시보드 */}
+          <section className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1">
+              요약 통계
             </span>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-gray-100/70 dark:bg-white/5 rounded-2xl py-3 px-2 flex flex-col items-center">
-                <span className="text-xl font-extrabold text-samsung-blue dark:text-blue-400">
+            <div className="grid grid-cols-3 gap-1.5">
+              <div className="bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-xl py-2.5 px-2 flex flex-col items-center">
+                <span className="text-base font-extrabold text-zinc-900 dark:text-white">
                   {notes.length}
                 </span>
-                <span className="text-[11px] font-bold text-gray-400 mt-0.5">전체</span>
+                <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  전체
+                </span>
               </div>
-              <div className="bg-gray-100/70 dark:bg-white/5 rounded-2xl py-3 px-2 flex flex-col items-center">
-                <span className="text-xl font-extrabold text-purple-500 dark:text-purple-400">
+              <div className="bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-xl py-2.5 px-2 flex flex-col items-center">
+                <span className="text-base font-extrabold text-blue-600 dark:text-blue-400">
                   {pinnedNotesCount}
                 </span>
-                <span className="text-[11px] font-bold text-gray-400 mt-0.5">고정</span>
+                <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  고정됨
+                </span>
               </div>
-              <div className="bg-gray-100/70 dark:bg-white/5 rounded-2xl py-3 px-2 flex flex-col items-center">
-                <span className="text-xl font-extrabold text-emerald-500 dark:text-emerald-400">
+              <div className="bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-xl py-2.5 px-2 flex flex-col items-center">
+                <span className="text-base font-extrabold text-emerald-600 dark:text-emerald-400">
                   {todayCopyCount}
                 </span>
-                <span className="text-[11px] font-bold text-gray-400 mt-0.5">오늘 복사</span>
+                <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  오늘 복사
+                </span>
               </div>
             </div>
           </section>
 
-          {/* 카테고리 필터 칩 */}
-          <section className="flex flex-col gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1">
-              카테고리 필터
+          {/* 수직 리스트형 카테고리 네비게이션 (항목별 카운트 배지 포함) */}
+          <section className="flex flex-col gap-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1 mb-0.5">
+              카테고리
             </span>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-col gap-0.5 max-h-64 overflow-y-auto pr-0.5">
               {FILTER_CATEGORIES.map((cat) => {
                 const active = filterCategory === cat;
+                const count = categoryCounts[cat] || 0;
                 return (
                   <button
                     key={cat}
                     type="button"
                     onClick={() => setFilterCategory(cat)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
+                    className={`w-full px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors ${
                       active
-                        ? 'bg-samsung-blue text-white border-samsung-blue shadow-sm'
-                        : 'bg-transparent text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-white/5'
+                        ? 'bg-blue-600 text-white font-bold shadow-sm'
+                        : 'text-zinc-700 dark:text-zinc-300 hover:bg-surface-light/70 dark:hover:bg-surface-dark/70'
                     }`}
                   >
-                    {cat}
+                    <span className="truncate">{cat}</span>
+                    <span
+                      className={`text-[11px] px-1.5 py-0.2 rounded-md font-bold ${
+                        active
+                          ? 'bg-white/20 text-white'
+                          : 'text-zinc-400 dark:text-zinc-500'
+                      }`}
+                    >
+                      {count}
+                    </span>
                   </button>
                 );
               })}
             </div>
           </section>
 
-          {/* 하단 다크모드 전환 버튼 */}
-          <div className="mt-auto pt-2">
+          {/* 하단 테마 전환 버튼 */}
+          <div className="mt-auto pt-2 border-t border-line-light dark:border-line-dark">
             <button
               type="button"
               onClick={() => setIsDark(!isDark)}
-              className="w-full px-4 py-3 rounded-2xl bg-gray-100/80 dark:bg-white/5 hover:bg-gray-200/80 dark:hover:bg-white/10 border border-gray-200/60 dark:border-gray-700/60 text-xs font-bold text-gray-700 dark:text-gray-200 flex items-center justify-center gap-2.5 transition-all"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center justify-center gap-2 transition-colors"
             >
               {isDark ? <IconSun /> : <IconMoon />}
-              <span>{isDark ? '라이트 모드로 전환' : '다크 모드로 전환'}</span>
+              <span>{isDark ? '라이트 모드 (Warm Paper)' : '다크 모드 (Carbon Slate)'}</span>
             </button>
           </div>
         </aside>
 
-        {/* ================= 우측 메인 패널 (Main Panel) ================= */}
+        {/* ================= 우측 메인 워크스페이스 ================= */}
         <main className="flex flex-col gap-4 min-w-0">
           {/* 손상 경고 배너 / 업데이트 배너 */}
           {corruptWarning && (
-            <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/40 text-red-600 dark:text-red-300 text-xs font-bold flex justify-between items-center gap-3">
+            <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-300 text-xs font-bold flex justify-between items-center gap-3">
               <span>{corruptWarning}</span>
               <button
                 type="button"
                 onClick={() => setCorruptWarning(null)}
-                className="px-3 py-1.5 rounded-lg bg-red-500 text-white text-xs font-bold shrink-0"
+                className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-bold shrink-0"
               >
                 확인
               </button>
@@ -1336,37 +1407,48 @@ export default function App() {
           )}
 
           {updateInfo && updateInfo.state === 'downloaded' && (
-            <div className="p-4 rounded-2xl bg-samsung-blue/15 border border-samsung-blue/40 text-samsung-blue dark:text-blue-300 text-xs font-bold flex justify-between items-center gap-3">
+            <div className="p-3.5 rounded-xl bg-blue-600/10 border border-blue-600/30 text-blue-600 dark:text-blue-300 text-xs font-bold flex justify-between items-center gap-3">
               <span>{updateInfo.message}</span>
               <button
                 type="button"
                 onClick={() => api?.installUpdate()}
-                className="px-4 py-2 rounded-xl bg-samsung-blue text-white text-xs font-bold hover:bg-blue-600 shrink-0"
+                className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shrink-0"
               >
                 지금 재시작하여 업데이트
               </button>
             </div>
           )}
 
-          {/* 상단 검색 & 고정필터 & 정렬 툴바 */}
-          <section className="bg-white/80 dark:bg-[#1C1C21]/90 backdrop-blur-xl px-5 py-3.5 rounded-2xl border border-gray-200/70 dark:border-samsung-border shadow-sm flex flex-wrap items-center justify-between gap-3">
+          {/* 상단 고정 검색 & 필터 바 */}
+          <section className="bg-surface-light dark:bg-surface-dark px-4 py-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 flex-1 min-w-[220px]">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 shrink-0">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400 shrink-0">
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
               <input
+                ref={searchInputRef}
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="제목, 본문 내용, #태그 검색..."
-                className="w-full bg-transparent text-sm font-semibold text-gray-900 dark:text-white placeholder-gray-400 outline-none"
+                placeholder="제목, 본문, #태그 검색 (Ctrl+F)..."
+                className="w-full bg-transparent text-xs sm:text-sm font-medium text-zinc-900 dark:text-white placeholder-zinc-400 outline-none"
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 px-1.5"
+                  title="검색어 지우기"
+                >
+                  ✕
+                </button>
+              )}
             </div>
 
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* 고정 항목만 보기 토글 */}
-              <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-gray-600 dark:text-gray-300">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* 고정 항목만 토글 */}
+              <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-semibold text-zinc-600 dark:text-zinc-300">
                 <input
                   type="checkbox"
                   checked={pinnedOnly}
@@ -1374,37 +1456,39 @@ export default function App() {
                   className="sr-only"
                 />
                 <div
-                  className={`w-9 h-5 rounded-full transition-colors relative ${
-                    pinnedOnly ? 'bg-samsung-blue' : 'bg-gray-300 dark:bg-gray-700'
+                  className={`w-8 h-4.5 rounded-full transition-colors relative py-2 ${
+                    pinnedOnly ? 'bg-blue-600' : 'bg-zinc-300 dark:bg-zinc-700'
                   }`}
                 >
                   <div
-                    className={`w-3.5 h-3.5 bg-white rounded-full absolute top-[3px] transition-transform ${
-                      pinnedOnly ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    className={`w-3 h-3 bg-white rounded-full absolute top-[2px] transition-transform ${
+                      pinnedOnly ? 'translate-x-[16px]' : 'translate-x-[2px]'
                     }`}
                   />
                 </div>
                 <span>고정 항목만</span>
               </label>
 
+              <div className="w-px h-4 bg-line-light dark:bg-line-dark" />
+
               {/* 최신순 / 과거순 */}
               <button
                 type="button"
                 onClick={() => setSortOrder(sortOrder === '최신순' ? '과거순' : '최신순')}
-                className="px-3 py-1.5 rounded-xl bg-gray-100 dark:bg-[#2A2A30] text-gray-700 dark:text-gray-200 text-xs font-bold hover:bg-gray-200 dark:hover:bg-[#35353D] transition-colors flex items-center gap-1.5"
+                className="px-2.5 py-1.5 rounded-lg bg-muted-light dark:bg-muted-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold border border-line-light dark:border-line-dark hover:border-zinc-400 transition-colors"
               >
-                <span>{sortOrder}</span>
+                {sortOrder}
               </button>
 
-              {/* 그리드 / 리스트 보기 전환 */}
-              <div className="flex rounded-xl bg-gray-100 dark:bg-[#2A2A30] p-0.5">
+              {/* 카드형 / 목록형 뷰 전환 */}
+              <div className="flex rounded-lg bg-muted-light dark:bg-muted-dark p-0.5 border border-line-light dark:border-line-dark">
                 <button
                   type="button"
                   onClick={() => setViewLayout('grid')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
                     viewLayout === 'grid'
-                      ? 'bg-white dark:bg-samsung-blue text-gray-900 dark:text-white shadow-sm'
-                      : 'text-gray-500'
+                      ? 'bg-surface-light dark:bg-surface-dark text-zinc-900 dark:text-white shadow-sm'
+                      : 'text-zinc-500'
                   }`}
                 >
                   카드형
@@ -1412,10 +1496,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setViewLayout('list')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
                     viewLayout === 'list'
-                      ? 'bg-white dark:bg-samsung-blue text-gray-900 dark:text-white shadow-sm'
-                      : 'text-gray-500'
+                      ? 'bg-surface-light dark:bg-surface-dark text-zinc-900 dark:text-white shadow-sm'
+                      : 'text-zinc-500'
                   }`}
                 >
                   목록형
@@ -1424,18 +1508,20 @@ export default function App() {
             </div>
           </section>
 
-          {/* 워크스페이스 영역: 1) 노트/클립 리치 작성기 OR 2) 클립보드 자동 감지 패널 */}
+          {/* ================= 1) Warm Minimalism 솔리드 노트 에디터 OR 2) 클립보드 감지 패널 ================= */}
           {workspace === 'composer' ? (
-            <div className="flex flex-col relative z-30">
+            <section className="bg-surface-light dark:bg-surface-dark p-5 sm:p-6 rounded-[20px] shadow-sm border border-line-light dark:border-line-dark transition-colors focus-within:border-blue-600/60">
               <form
                 onSubmit={handleAddNote}
-                className="bg-white/85 dark:bg-[#1C1C21]/90 backdrop-blur-xl p-6 rounded-3xl shadow-lg border border-gray-200/70 dark:border-samsung-border flex flex-col gap-3 transition-all focus-within:ring-2 focus-within:ring-samsung-blue/30"
+                className={`flex flex-col gap-3 ${
+                  isFocusMode ? 'max-w-[720px] mx-auto w-full py-2' : ''
+                }`}
               >
                 <div className="flex items-center justify-between gap-3">
                   <input
                     type="text"
-                    placeholder="제목 또는 클립 용도"
-                    className="w-full bg-transparent text-gray-900 dark:text-white text-xl font-extrabold placeholder-gray-400 focus:outline-none px-1"
+                    placeholder="제목 또는 클립 용도를 입력하세요..."
+                    className="w-full bg-transparent text-zinc-900 dark:text-gray-100 text-lg sm:text-xl font-extrabold placeholder-zinc-400 focus:outline-none px-1"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     onFocus={() => setIsInputFocused(true)}
@@ -1451,23 +1537,25 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-3 py-2 rounded-xl bg-gray-100 dark:bg-[#2A2A30] hover:bg-gray-200 dark:hover:bg-[#35353D] text-gray-700 dark:text-gray-200 text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors"
+                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200/70 dark:hover:bg-white/10 border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors"
                     title="이미지 파일 첨부"
                   >
                     <IconImage />
-                    <span>이미지 첨부</span>
+                    <span>이미지</span>
                   </button>
                 </div>
 
+                {/* 슬림 1줄 서식 툴바 */}
                 <FormattingBar editorRef={mainEditorRef} onFormatChange={(html) => setContent(html)} />
 
+                {/* 불투명 고대비 본문 에디터 */}
                 <div
                   ref={mainEditorRef}
                   contentEditable
                   suppressContentEditableWarning
-                  data-placeholder="내용을 입력하거나 텍스트/이미지를 붙여넣으세요 (Ctrl+V)..."
-                  className={`w-full bg-transparent text-gray-700 dark:text-gray-200 text-base px-2 transition-all ${
-                    isFocusMode ? 'min-h-[45vh]' : 'min-h-[100px]'
+                  data-placeholder="내용을 작성하거나 텍스트/이미지를 붙여넣으세요 (Ctrl+V)..."
+                  className={`w-full bg-transparent text-zinc-800 dark:text-gray-100 text-base px-1.5 transition-all ${
+                    isFocusMode ? 'min-h-[48vh]' : 'min-h-[104px]'
                   }`}
                   onInput={(e) => setContent(e.currentTarget.innerHTML)}
                   onPaste={(e) => handleSafePaste(e, mainEditorRef, setContent, false)}
@@ -1475,18 +1563,17 @@ export default function App() {
                   onBlur={() => setIsInputFocused(false)}
                 />
 
-                {/* 첨부된 이미지 미리보기 */}
                 {attachedImage && (
-                  <div className="relative self-start mt-1 p-2 rounded-2xl bg-gray-100 dark:bg-black/30 border border-gray-200 dark:border-gray-700">
+                  <div className="relative self-start mt-1 p-2 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark">
                     <img
                       src={attachedImage}
                       alt="첨부 이미지"
-                      className="max-h-44 rounded-xl object-contain"
+                      className="max-h-40 rounded-lg object-contain"
                     />
                     <button
                       type="button"
                       onClick={() => setAttachedImage('')}
-                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 text-white text-xs font-bold grid place-items-center shadow-md"
+                      className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-bold grid place-items-center shadow"
                       title="첨부 이미지 제거"
                     >
                       ✕
@@ -1494,8 +1581,8 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center pt-4 border-t border-gray-100 dark:border-gray-800 mt-1 gap-3 relative z-50">
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 flex-1">
+                <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center pt-3.5 border-t border-line-light dark:border-line-dark mt-1 gap-2.5 relative z-50">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1">
                     <CustomSelect
                       value={category}
                       onChange={setCategory}
@@ -1507,17 +1594,17 @@ export default function App() {
                       type="text"
                       value={tagsInput}
                       onChange={(e) => setTagsInput(e.target.value)}
-                      placeholder="#태그 입력 (쉼표로 구분, 예: 메일, 응답)"
-                      className="flex-1 bg-gray-100/80 dark:bg-[#2A2A30]/80 text-gray-800 dark:text-gray-200 px-3.5 py-2.5 rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-samsung-blue"
+                      placeholder="#태그 입력 (쉼표로 구분)"
+                      className="flex-1 bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200 px-3 py-2 rounded-xl text-xs font-medium outline-none focus:border-blue-600"
                     />
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
                     {(hasInputFocusOrContent || isFocusMode) && (
                       <button
                         type="button"
                         onClick={resetForm}
-                        className="px-4 py-2.5 rounded-xl text-xs font-bold text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                        className="px-3 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors"
                       >
                         초기화
                       </button>
@@ -1525,20 +1612,24 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsFocusMode(!isFocusMode)}
-                      className="px-3.5 py-2.5 rounded-xl bg-gray-100 dark:bg-[#2A2A30] text-gray-600 dark:text-gray-300 text-xs font-bold hover:bg-gray-200 transition-colors"
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-colors ${
+                        isFocusMode
+                          ? 'bg-blue-600/10 text-blue-600 dark:text-blue-400 border-blue-600/30'
+                          : 'bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 border-line-light dark:border-line-dark hover:border-zinc-400'
+                      }`}
                     >
                       {isFocusMode ? '목록 보기' : '집중 모드'}
                     </button>
                     <button
                       type="submit"
-                      className="px-6 py-2.5 bg-gradient-to-r from-samsung-blue to-purple-600 hover:opacity-95 text-white rounded-xl text-xs font-bold shadow-md transition-all active:scale-95"
+                      className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-colors"
                     >
                       저장하기
                     </button>
                   </div>
                 </div>
               </form>
-            </div>
+            </section>
           ) : (
             <MonitorPanel
               isMonitoring={isMonitoring}
@@ -1555,50 +1646,59 @@ export default function App() {
             />
           )}
 
-          {/* ================= 노트 & 클립 카드 목록 ================= */}
+          {/* ================= Bento UI 노트 & 클립 카드 그리드 ================= */}
           <section
-            className={`transition-all duration-500 pb-16 ${
+            className={`transition-opacity duration-300 pb-16 ${
               isFocusMode && workspace === 'composer'
                 ? 'opacity-0 pointer-events-none max-h-0 overflow-hidden'
                 : formActiveState
-                ? 'opacity-35 blur-[3px] scale-[0.99] pointer-events-none'
-                : 'opacity-100 blur-0 scale-100'
+                ? 'opacity-45'
+                : 'opacity-100'
             }`}
           >
             {filteredAndSortedNotes.length === 0 ? (
-              <div className="bg-white/60 dark:bg-[#1C1C21]/60 border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-3xl py-16 px-6 text-center text-gray-400">
-                <p className="text-base font-bold">표시할 노트나 클립이 없습니다.</p>
-                <p className="text-xs mt-1.5 opacity-80">
-                  위에서 직접 작성하거나 [클립보드 자동 감지]를 켜서 복사한 항목을 수집해 보세요!
+              <div className="bg-surface-light/60 dark:bg-surface-dark/60 border border-dashed border-line-light dark:border-line-dark rounded-[20px] py-16 px-6 text-center text-zinc-400">
+                <p className="text-sm font-bold text-zinc-600 dark:text-zinc-300">
+                  표시할 노트나 클립이 없습니다.
+                </p>
+                <p className="text-xs mt-1 text-zinc-400">
+                  위 입력창에서 새 노트를 작성하거나 클립보드 자동 감지를 시작해 보세요.
                 </p>
               </div>
             ) : (
               <div
                 className={
                   viewLayout === 'grid'
-                    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4'
-                    : 'flex flex-col gap-3.5'
+                    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5'
+                    : 'flex flex-col gap-3'
                 }
               >
                 {filteredAndSortedNotes.map((note, idx) => (
                   <article
                     key={note.id}
                     onClick={() => handleOpenView(note)}
-                    style={{ animationDelay: `${Math.min(idx * 0.025, 0.25)}s` }}
-                    className={`animate-list-item group flex flex-col justify-between p-5 rounded-3xl border transition-all duration-200 cursor-pointer shadow-sm hover:shadow-lg hover:-translate-y-0.5 ${
+                    style={{ animationDelay: `${Math.min(idx * 0.02, 0.2)}s` }}
+                    className={`animate-list-item group bg-surface-light dark:bg-surface-dark flex flex-col justify-between p-5 rounded-2xl border transition-all duration-150 cursor-pointer hover:-translate-y-0.5 hover:shadow-md ${
                       note.pinned
-                        ? 'bg-gradient-to-br from-white to-blue-50/60 dark:from-[#22222A] dark:to-[#1E2235] border-samsung-blue/35'
-                        : 'bg-white/85 dark:bg-[#1C1C21]/90 border-gray-200/70 dark:border-samsung-border'
+                        ? 'border-l-[3px] border-l-blue-600 border-t-line-light border-r-line-light border-b-line-light dark:border-t-line-dark dark:border-r-line-dark dark:border-b-line-dark'
+                        : 'border-line-light dark:border-line-dark hover:border-zinc-300 dark:hover:border-zinc-600'
                     }`}
                   >
                     <div>
-                      {/* 카드 상단: 카테고리 + 제목 + 고정(Pin) 버튼 */}
-                      <div className="flex items-start justify-between gap-2 mb-2.5">
+                      {/* 카드 헤더: 절제된 톤온톤 카테고리 배지 + 제목 + 고정 핀 */}
+                      <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex flex-col gap-1.5 min-w-0">
-                          <span className="self-start px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11px] font-bold">
-                            {note.category || CATEGORIES[0]}
-                          </span>
-                          <h3 className="font-extrabold text-base text-gray-900 dark:text-gray-100 line-clamp-2 group-hover:text-samsung-blue dark:group-hover:text-blue-400 transition-colors">
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 text-[11px] font-semibold border border-line-light dark:border-line-dark">
+                              {note.category || CATEGORIES[0]}
+                            </span>
+                            {note.pinned && (
+                              <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
+                                📌 고정됨
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="font-bold text-[15px] text-zinc-900 dark:text-gray-100 line-clamp-2 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors leading-snug">
                             {note.title || '제목 없음'}
                           </h3>
                         </div>
@@ -1606,10 +1706,10 @@ export default function App() {
                         <button
                           type="button"
                           onClick={(e) => handleTogglePin(note.id, e)}
-                          className={`w-8 h-8 rounded-xl border grid place-items-center shrink-0 transition-all ${
+                          className={`w-7 h-7 rounded-lg grid place-items-center shrink-0 transition-colors ${
                             note.pinned
-                              ? 'bg-samsung-blue/15 text-samsung-blue dark:text-blue-400 border-samsung-blue/30'
-                              : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-samsung-blue hover:border-samsung-blue'
+                              ? 'text-blue-600 dark:text-blue-400 bg-blue-600/10'
+                              : 'text-zinc-400 opacity-0 group-hover:opacity-100 hover:bg-muted-light dark:hover:bg-muted-dark hover:text-zinc-700 dark:hover:text-zinc-200'
                           }`}
                           title={note.pinned ? '고정 해제' : '상단 고정'}
                         >
@@ -1617,23 +1717,25 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* 첨부 이미지 썸네일 */}
+                      {/* 통일된 높이의 이미지 썸네일 컨테이너 */}
                       {note.imageDataUrl && (
-                        <img
-                          src={note.imageDataUrl}
-                          alt="클립 이미지"
-                          className="w-full max-h-40 object-contain rounded-2xl bg-black/5 dark:bg-black/30 border border-gray-200/60 dark:border-gray-800 mb-2.5"
-                        />
+                        <div className="w-full h-36 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark mb-2.5 overflow-hidden flex items-center justify-center">
+                          <img
+                            src={note.imageDataUrl}
+                            alt="클립 이미지"
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
                       )}
 
-                      {/* 본문 요약 */}
-                      <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-3 whitespace-pre-wrap break-words leading-relaxed mb-3">
+                      {/* 본문 요약 (WCAG 고대비 보조 텍스트) */}
+                      <p className="text-xs sm:text-[13px] text-zinc-600 dark:text-gray-400 line-clamp-3 whitespace-pre-wrap break-words leading-relaxed mb-3">
                         {note._plainText || (note.imageDataUrl ? '이미지 클립입니다.' : '')}
                       </p>
 
-                      {/* 해시태그 목록 */}
+                      {/* 절제된 무채색/단일톤 해시태그 */}
                       {note.tags && note.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mb-3">
+                        <div className="flex flex-wrap gap-1 mb-3">
                           {note.tags.map((tag) => (
                             <span
                               key={tag}
@@ -1641,7 +1743,7 @@ export default function App() {
                                 e.stopPropagation();
                                 setSearchQuery(tag);
                               }}
-                              className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[11px] font-bold hover:bg-emerald-500/20"
+                              className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 text-[11px] font-medium transition-colors"
                             >
                               #{tag}
                             </span>
@@ -1650,37 +1752,26 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* 카드 하단: 날짜 · 복사 횟수 & 액션 버튼 (복사 / 보기 / 수정 / 삭제) */}
-                    <div className="pt-2.5 border-t border-gray-100 dark:border-gray-800 flex flex-col gap-2.5">
-                      <div className="flex items-center justify-between text-[11px] text-gray-400 font-semibold">
-                        <span>{formatCreatedDate(note)}</span>
-                        <span>복사 {note.copied || 0}회</span>
-                      </div>
+                    {/* 카드 푸터: 메타 정보 & 깔끔한 버튼 위계 */}
+                    <div className="pt-2.5 border-t border-line-light dark:border-line-dark flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium truncate">
+                        {formatCreatedDate(note)} · 복사 {note.copied || 0}회
+                      </span>
 
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
                           onClick={(e) => handleCopyNote(note, e)}
-                          className="flex-1 py-2 px-3 rounded-xl bg-samsung-blue/10 hover:bg-samsung-blue text-samsung-blue dark:text-blue-400 hover:text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all"
+                          className="py-1.5 px-2.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 text-zinc-700 dark:text-zinc-200 hover:text-white text-xs font-semibold flex items-center gap-1 border border-line-light dark:border-line-dark transition-colors"
+                          title="클립보드에 복사"
                         >
                           <IconCopy />
                           <span>복사</span>
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenView(note);
-                          }}
-                          className="p-2 rounded-xl bg-gray-100 dark:bg-[#2A2A30] hover:bg-gray-200 text-gray-600 dark:text-gray-300 transition-colors"
-                          title="상세 보기"
-                        >
-                          <IconEye />
-                        </button>
-                        <button
-                          type="button"
                           onClick={(e) => handleOpenEdit(note, e)}
-                          className="p-2 rounded-xl bg-gray-100 dark:bg-[#2A2A30] hover:bg-blue-500/20 text-gray-600 dark:text-gray-300 hover:text-samsung-blue transition-colors"
+                          className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-800 dark:hover:text-white hover:bg-muted-light dark:hover:bg-muted-dark transition-colors"
                           title="편집"
                         >
                           <IconEdit />
@@ -1688,7 +1779,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={(e) => handleDeleteNote(note.id, e)}
-                          className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white transition-colors"
+                          className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-red-600 transition-colors"
                           title="삭제"
                         >
                           <IconTrash />
@@ -1703,71 +1794,74 @@ export default function App() {
         </main>
       </div>
 
-      {/* ================= 상세 보기 모달 (View Modal) ================= */}
+      {/* ================= 아티클 스타일 상세 보기 모달 (Reader View) ================= */}
       {viewingNote && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-md"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/55 backdrop-blur-md"
           onClick={() => setViewingNote(null)}
         >
           <div
-            className="bg-white dark:bg-[#18181D] w-full max-w-3xl max-h-[88vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-modal border border-gray-200/40 dark:border-gray-700"
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-3xl max-h-[88vh] rounded-[20px] shadow-2xl flex flex-col overflow-hidden animate-modal border border-line-light dark:border-line-dark"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center px-7 py-5 border-b border-gray-100 dark:border-gray-800">
-              <div className="flex items-center gap-3">
-                <span className="px-3 py-1 rounded-full bg-samsung-blue/15 text-samsung-blue dark:text-blue-400 text-xs font-bold">
+            <div className="flex justify-between items-center px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="px-2.5 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-300 text-xs font-bold">
                   {viewingNote.category || CATEGORIES[0]}
                 </span>
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
                   작성: {formatCreatedDateTime(viewingNote)} · 복사 {viewingNote.copied || 0}회
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setViewingNote(null)}
-                className="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="p-1.5 rounded-lg text-zinc-400 hover:bg-muted-light dark:hover:bg-muted-dark"
               >
                 <IconClose />
               </button>
             </div>
 
-            <div className="p-7 overflow-y-auto flex-1 flex flex-col gap-4">
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-white break-words">
-                {viewingNote.title}
-              </h1>
+            {/* 독서 최적화 컨테이너 (최대 줄 길이 68ch 중심) */}
+            <div className="px-8 py-8 overflow-y-auto flex-1">
+              <div className="max-w-[68ch] mx-auto flex flex-col gap-5">
+                <h1 className="text-2xl sm:text-[28px] font-extrabold text-zinc-900 dark:text-white break-words leading-tight">
+                  {viewingNote.title}
+                </h1>
 
-              {viewingNote.tags && viewingNote.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {viewingNote.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-bold"
-                    >
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              )}
+                {viewingNote.tags && viewingNote.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {viewingNote.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="px-2.5 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-600 dark:text-zinc-300 text-xs font-semibold"
+                      >
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
-              {viewingNote.imageDataUrl && (
-                <img
-                  src={viewingNote.imageDataUrl}
-                  alt="첨부 이미지"
-                  className="max-h-96 object-contain rounded-2xl bg-black/5 dark:bg-black/30 border border-gray-200 dark:border-gray-800 self-start"
+                {viewingNote.imageDataUrl && (
+                  <img
+                    src={viewingNote.imageDataUrl}
+                    alt="첨부 이미지"
+                    className="max-h-96 object-contain rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark self-start"
+                  />
+                )}
+
+                <div
+                  className="text-zinc-800 dark:text-gray-100 text-base leading-[1.75] whitespace-pre-wrap break-words pt-1"
+                  dangerouslySetInnerHTML={{ __html: sanitizeNoteHtml(viewingNote.content) }}
                 />
-              )}
-
-              <div
-                className="text-gray-800 dark:text-gray-200 text-base leading-relaxed whitespace-pre-wrap break-words pt-2"
-                dangerouslySetInnerHTML={{ __html: sanitizeNoteHtml(viewingNote.content) }}
-              />
+              </div>
             </div>
 
-            <div className="px-7 py-4 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2.5 bg-gray-50 dark:bg-[#141418]">
+            <div className="px-7 py-3.5 border-t border-line-light dark:border-line-dark flex justify-end gap-2 bg-canvas-light/60 dark:bg-canvas-dark/60">
               <button
                 type="button"
                 onClick={(e) => handleCopyNote(viewingNote, e)}
-                className="px-5 py-2.5 rounded-xl bg-gray-200 dark:bg-[#2A2A30] text-gray-800 dark:text-gray-100 text-xs font-bold flex items-center gap-1.5 hover:opacity-90"
+                className="px-4 py-2 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-800 dark:text-gray-100 text-xs font-bold flex items-center gap-1.5 hover:border-zinc-400"
               >
                 <IconCopy />
                 <span>클립보드 복사</span>
@@ -1779,7 +1873,7 @@ export default function App() {
                   setViewingNote(null);
                   handleOpenEdit(target);
                 }}
-                className="px-5 py-2.5 rounded-xl bg-samsung-blue text-white text-xs font-bold flex items-center gap-1.5 hover:bg-blue-600"
+                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold flex items-center gap-1.5 hover:bg-blue-700"
               >
                 <IconEdit />
                 <span>편집하기</span>
@@ -1792,27 +1886,27 @@ export default function App() {
       {/* ================= 편집 모달 (Edit Modal) ================= */}
       {editingNote && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-md"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/55 backdrop-blur-md"
           onClick={requestCloseEditModal}
         >
           <div
-            className="bg-white dark:bg-[#18181D] w-full max-w-3xl max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-modal border border-gray-200/40 dark:border-gray-700"
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-3xl max-h-[90vh] rounded-[20px] shadow-2xl flex flex-col overflow-hidden animate-modal border border-line-light dark:border-line-dark"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center px-7 py-5 border-b border-gray-100 dark:border-gray-800">
-              <h2 className="text-lg font-extrabold text-gray-900 dark:text-white flex items-center gap-2">
+            <div className="flex justify-between items-center px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
+              <h2 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
                 <IconEdit /> 노트·클립 편집
               </h2>
               <button
                 type="button"
                 onClick={requestCloseEditModal}
-                className="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="p-1.5 rounded-lg text-zinc-400 hover:bg-muted-light dark:hover:bg-muted-dark"
               >
                 <IconClose />
               </button>
             </div>
 
-            <div className="p-7 overflow-y-auto flex-1 flex flex-col gap-4">
+            <div className="p-7 overflow-y-auto flex-1 flex flex-col gap-3.5">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <CustomSelect
                   value={editingNote.category || CATEGORIES[0]}
@@ -1832,7 +1926,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => editFileInputRef.current?.click()}
-                    className="px-3 py-2 rounded-xl bg-gray-100 dark:bg-[#2A2A30] text-xs font-bold flex items-center gap-1.5"
+                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-semibold flex items-center gap-1.5"
                   >
                     <IconImage />
                     <span>이미지 변경/추가</span>
@@ -1850,7 +1944,7 @@ export default function App() {
                 placeholder="제목"
                 value={editingNote.title}
                 onChange={(e) => setEditingNote((prev) => ({ ...prev, title: e.target.value }))}
-                className="w-full bg-transparent text-2xl font-extrabold text-gray-900 dark:text-white outline-none"
+                className="w-full bg-transparent text-xl sm:text-2xl font-extrabold text-zinc-900 dark:text-white outline-none px-1"
               />
 
               <input
@@ -1858,20 +1952,20 @@ export default function App() {
                 placeholder="#태그 입력 (쉼표로 구분)"
                 value={editingTagsInput}
                 onChange={(e) => setEditingTagsInput(e.target.value)}
-                className="w-full bg-gray-100 dark:bg-[#25252C] px-3.5 py-2 rounded-xl text-xs font-semibold text-gray-800 dark:text-gray-200 outline-none"
+                className="w-full bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark px-3.5 py-2 rounded-xl text-xs font-medium text-zinc-800 dark:text-gray-200 outline-none focus:border-blue-600"
               />
 
               {editingNote.imageDataUrl && (
-                <div className="relative self-start p-2 rounded-2xl bg-gray-100 dark:bg-black/30 border border-gray-200 dark:border-gray-700">
+                <div className="relative self-start p-2 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark">
                   <img
                     src={editingNote.imageDataUrl}
                     alt="첨부 이미지"
-                    className="max-h-48 object-contain rounded-xl"
+                    className="max-h-44 object-contain rounded-lg"
                   />
                   <button
                     type="button"
                     onClick={() => setEditingNote((prev) => ({ ...prev, imageDataUrl: '' }))}
-                    className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 text-white text-xs font-bold grid place-items-center"
+                    className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-bold grid place-items-center"
                   >
                     ✕
                   </button>
@@ -1883,7 +1977,7 @@ export default function App() {
                 contentEditable
                 suppressContentEditableWarning
                 data-placeholder="내용"
-                className="w-full bg-transparent text-gray-700 dark:text-gray-200 min-h-[28vh] text-base pt-2"
+                className="w-full bg-transparent text-zinc-800 dark:text-gray-100 min-h-[28vh] text-base pt-2 px-1 leading-[1.75]"
                 onInput={(e) =>
                   setEditingNote((prev) => ({ ...prev, content: e.currentTarget.innerHTML }))
                 }
@@ -1898,18 +1992,18 @@ export default function App() {
               />
             </div>
 
-            <div className="px-7 py-4 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-3 bg-gray-50 dark:bg-[#141418]">
+            <div className="px-7 py-3.5 border-t border-line-light dark:border-line-dark flex justify-end gap-2 bg-canvas-light/60 dark:bg-canvas-dark/60">
               <button
                 type="button"
                 onClick={requestCloseEditModal}
-                className="px-5 py-2.5 rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:bg-muted-light dark:hover:bg-muted-dark"
               >
                 취소
               </button>
               <button
                 type="button"
                 onClick={handleSaveEdit}
-                className="px-7 py-2.5 rounded-xl bg-gradient-to-r from-samsung-blue to-purple-600 text-white text-xs font-bold shadow-md hover:opacity-95"
+                className="px-6 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
               >
                 수정 완료
               </button>

@@ -9,31 +9,33 @@ export function CustomSelect({ value, onChange, options, onOpenChange, isSmall }
   };
 
   return (
-    <div className="relative w-full sm:w-auto min-w-[140px]">
+    <div className="relative w-full sm:w-auto min-w-[136px]">
       {isOpen && <div className="fixed inset-0 z-40" onClick={() => handleToggle(false)} />}
       <button
         type="button"
         onClick={() => handleToggle(!isOpen)}
-        className={`relative z-50 w-full bg-gray-100/80 dark:bg-[#2A2A2C]/80 text-gray-800 dark:text-gray-200 px-4 flex justify-between items-center shadow-sm transition-all hover:bg-gray-200 dark:hover:bg-[#353538] ${
-          isSmall ? 'py-2.5 rounded-xl text-sm font-semibold' : 'py-3.5 rounded-xl text-sm font-bold'
-        } ${isOpen ? 'ring-2 ring-samsung-blue ring-opacity-50' : ''}`}
+        className={`relative z-50 w-full bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200 px-3.5 flex justify-between items-center transition-colors hover:border-zinc-400 dark:hover:border-zinc-600 ${
+          isSmall ? 'py-2 rounded-xl text-xs font-semibold' : 'py-2.5 rounded-xl text-xs font-bold'
+        } ${isOpen ? 'ring-2 ring-blue-600/30 border-blue-600' : ''}`}
       >
-        <span className="truncate pr-3">{value}</span>
+        <span className="truncate pr-2">{value}</span>
         <svg
           xmlns="http://www.w3.org/2000/svg"
-          width="16"
-          height="16"
+          width="14"
+          height="14"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
-          className={`text-gray-500 transition-transform duration-300 shrink-0 ${isOpen ? 'rotate-180' : ''}`}
+          className={`text-zinc-500 transition-transform duration-200 shrink-0 ${
+            isOpen ? 'rotate-180' : ''
+          }`}
         >
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {isOpen && (
-        <div className="absolute top-[calc(100%+8px)] left-0 w-full bg-white/95 dark:bg-[#252527]/95 backdrop-blur-md border border-gray-100 dark:border-samsung-border rounded-xl shadow-2xl z-50 py-2 overflow-hidden animate-[slideDown_0.2s_ease-out]">
-          <ul className="flex flex-col">
+        <div className="absolute top-[calc(100%+6px)] left-0 w-full bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-xl shadow-xl z-50 py-1.5 overflow-hidden animate-modal">
+          <ul className="flex flex-col max-h-64 overflow-y-auto">
             {options.map((c) => (
               <li
                 key={c}
@@ -41,10 +43,10 @@ export function CustomSelect({ value, onChange, options, onOpenChange, isSmall }
                   onChange(c);
                   handleToggle(false);
                 }}
-                className={`px-5 py-3 text-sm font-bold cursor-pointer transition-colors flex items-center gap-2 ${
+                className={`px-3.5 py-2 text-xs font-semibold cursor-pointer transition-colors flex items-center gap-2 ${
                   value === c
-                    ? 'text-samsung-blue dark:text-blue-400 bg-samsung-blue/5 dark:bg-black/20'
-                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5'
+                    ? 'text-blue-600 dark:text-blue-400 bg-blue-600/10'
+                    : 'text-zinc-700 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark'
                 }`}
               >
                 {c}
