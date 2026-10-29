@@ -1150,8 +1150,8 @@ export default function App() {
   const handleManualUpdateCheck = async () => {
     if (!api) return;
     const res = await api.checkForUpdates();
-    if (res && !res.ok && res.message) {
-      showToast(res.message, 'info');
+    if (res && res.message) {
+      showToast(res.message, res.ok ? 'info' : 'error');
     }
   };
 
@@ -1382,13 +1382,13 @@ export default function App() {
                 </div>
 
                 {/* 4. 소프트웨어 업데이트 */}
-                <div className="bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark flex justify-between items-center">
-                  <div className="flex flex-col">
+                <div className="bg-canvas-light dark:bg-canvas-dark p-3.5 rounded-xl border border-line-light dark:border-line-dark flex justify-between items-center gap-3">
+                  <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-xs font-bold text-zinc-800 dark:text-gray-200">
                       소프트웨어 업데이트
                     </span>
-                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                      {updateInfo?.message || 'GitHub Releases 자동 업데이트 연동됨'}
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400 break-words line-clamp-2">
+                      {updateInfo?.message || '현재 최신 버전을 사용 중입니다.'}
                     </span>
                   </div>
                   <button

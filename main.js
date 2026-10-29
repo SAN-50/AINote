@@ -1080,6 +1080,37 @@ ipcMain.handle('app:info', (event) => {
   };
 });
 
+function formatUpdaterError(err) {
+  const raw = String(err?.message || err || '');
+  if (
+    raw.includes('404') ||
+    raw.includes('releases.atom') ||
+    raw.includes('latest.yml') ||
+    raw.includes('No published versions')
+  ) {
+    return {
+      isNoRelease: true,
+      message: '현재 최신 버전을 사용 중입니다. (등록된 공개 릴리스 없음)'
+    };
+  }
+  if (
+    raw.includes('net::ERR_INTERNET_DISCONNECTED') ||
+    raw.includes('net::ERR_NAME_NOT_RESOLVED') ||
+    raw.includes('ENOTFOUND') ||
+    raw.includes('ETIMEDOUT')
+  ) {
+    return {
+      isNoRelease: false,
+      message: '인터넷 연결을 확인할 수 없어 업데이트를 확인하지 못했습니다.'
+    };
+  }
+  const firstLine = raw.split(/\r?\n/)[0].replace(/Headers:\s*\{.*$/i, '').trim();
+  return {
+    isNoRelease: false,
+    message: `업데이트 확인 실패: ${firstLine.slice(0, 80) || '연결 오류'}`
+  };
+}
+
 function setupAutoUpdater() {
   let autoUpdater;
   try {
@@ -1111,7 +1142,11 @@ function setupAutoUpdater() {
     sendStatus({ state: 'not-available', message: '현재 최신 버전을 사용 중입니다.' });
   });
   autoUpdater.on('error', (err) => {
-    sendStatus({ state: 'error', message: `업데이트 확인 실패: ${err?.message || '오류'}` });
+    const formatted = formatUpdaterError(err);
+    sendStatus({
+      state: formatted.isNoRelease ? 'not-available' : 'error',
+      message: formatted.message
+    });
   });
   autoUpdater.on('update-downloaded', (info) => {
     const current = loadStoredDataInternal();
@@ -1125,7 +1160,8 @@ function setupAutoUpdater() {
     });
   });
 
-  ipcMain.handle('updater:check', async () => {
+  ipcMain.handle('updater:check', async (event) => {
+    if (!isTrustedIpcSender(event)) return { ok: false, message: 'Untrusted sender' };
     if (!app.isPackaged) {
       return { ok: false, message: '개발 모드에서는 자동 업데이트를 실행하지 않습니다.' };
     }
@@ -1133,11 +1169,17 @@ function setupAutoUpdater() {
       await autoUpdater.checkForUpdates();
       return { ok: true };
     } catch (err) {
-      return { ok: false, message: err.message };
+      const formatted = formatUpdaterError(err);
+      sendStatus({
+        state: formatted.isNoRelease ? 'not-available' : 'error',
+        message: formatted.message
+      });
+      return { ok: formatted.isNoRelease, message: formatted.message };
     }
   });
 
-  ipcMain.handle('updater:install', () => {
+  ipcMain.handle('updater:install', (event) => {
+    if (!isTrustedIpcSender(event)) return;
     if (app.isPackaged) {
       autoUpdater.quitAndInstall();
     }
