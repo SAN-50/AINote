@@ -7,6 +7,19 @@
   - 최신 Electron 45에서 기존 동기식 `clipboard.readBuffer`·`clipboard.readImage`가 제거되고 비동기 웹 표준 `await clipboard.read()`·`await clipboard.readText()`·`ClipboardItem` 구조로 변경됨에 따라 발생하던 `"클립보드를 읽는 중 오류가 발생했습니다."` 오류를 완벽 해결.
   - 앱이 백그라운드에 있을 때도 다른 프로그램이나 파일 탐색기에서 복사(`Ctrl+C`)한 텍스트·이미지·파일을 실시간으로 감지하도록 개선.
 
+### Security (신규 파일·클립보드·잠금 보안 강화)
+- **UNC 네트워크 경로(`\\server\share`) 및 SMB NTLMv2 해시 유출 차단 (`isSafeLocalPath`)**:
+  - 클립보드 폴링, 파일 첨부, 백업 JSON 가져오기, 파일 열기/폴더 보기 전 과정에서 로컬 드라이브(`C:\...`)만 허용하고 원격 UNC 경로 및 디바이스 경로(`\\.\`, `\\?\`)를 원천 차단.
+- **실행 파일·스크립트 실행 경고창 및 파일명/확장자 위변조 방지 (`DANGEROUS_EXTENSIONS`, `normalizeFileInfo`)**:
+  - 백업 JSON이나 외부 데이터에서 표시 이름(`회의록.pdf`)과 실제 경로(`cmd.exe`)를 다르게 조작할 수 없도록 메인 프로세스에서 항상 실제 경로의 파일명과 확장자를 강제 추출.
+  - `.exe`, `.bat`, `.cmd`, `.ps1`, `.vbs`, `.lnk`, `.hta`, `.reg` 등 실행/스크립트 파일을 열 때 즉시 실행하지 않고 네이티브 보안 확인창(`[취소 | 폴더에서 보기 | 실행하기]`)을 표시.
+- **래스터 이미지 Data URL 검증 및 메모리 DoS 방어 (`isSafeImageDataUrl`)**:
+  - `data:image/svg+xml` 등 스크립트 포함 가능 포맷을 차단하고 안전한 Base64 래스터 이미지(`png, jpeg, gif, webp, bmp, ico`)만 허용하며 최대 크기(22MB) 및 백업 파일 크기(50MB) 제한 적용.
+- **비밀번호 무차별 대입(Brute-force) 방어 (`checkPasswordRateLimit`)**:
+  - 비밀번호 검증·변경·해제 시 5회 연속 실패하면 15초간 시도를 차단하는 Rate Limit 적용.
+- **IPC 발신자 검증 (`isTrustedIpcSender`) 및 브라우저 권한 전면 차단**:
+  - 모든 `ipcMain.handle` 채널에서 신뢰된 `mainWindow.webContents` 발신자인지 검증하고, `session.defaultSession`의 카메라·마이크·위치 등 모든 권한 요청을 기본 거부(`false`).
+
 ### Added (이미지·파일 전용 칸 및 첨부/분류 기능 추가)
 - **클립보드 일반 파일(File) 자동 감지 지원**:
   - 텍스트(`📝 텍스트`)와 이미지(`🖼️ 이미지`)뿐 아니라 윈도우 탐색기에서 복사한 일반 파일·폴더(`📎 파일`, 문서/압축파일/실행파일 등)도 파일명·용량·전체 경로와 함께 실시간 감지 및 72시간 임시 보관함에 수집.

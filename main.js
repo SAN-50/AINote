@@ -8,7 +8,8 @@ const {
   Menu,
   clipboard,
   ClipboardItem,
-  nativeImage
+  nativeImage,
+  session
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -29,8 +30,91 @@ if (!gotSingleLock) {
 
 const CURRENT_SCHEMA_VERSION = 3;
 const MAX_BACKUPS = 10;
+const MAX_IMAGE_DATA_URL_LENGTH = 22 * 1024 * 1024; // ~15MB binary
+const SAFE_RASTER_DATA_URL_RE =
+  /^data:image\/(png|jpeg|jpg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/=\s]+$/i;
+
+const DANGEROUS_EXTENSIONS = new Set([
+  '.exe',
+  '.msi',
+  '.msp',
+  '.bat',
+  '.cmd',
+  '.ps1',
+  '.vbs',
+  '.vbe',
+  '.js',
+  '.jse',
+  '.wsf',
+  '.wsh',
+  '.scr',
+  '.hta',
+  '.pif',
+  '.com',
+  '.reg',
+  '.cpl',
+  '.msc',
+  '.jar',
+  '.lnk',
+  '.url',
+  '.scf'
+]);
 
 let mainWindow = null;
+let passwordFailedAttempts = 0;
+let passwordLockoutUntil = 0;
+const MAX_PASSWORD_ATTEMPTS = 5;
+const PASSWORD_LOCKOUT_MS = 15 * 1000;
+
+function isTrustedIpcSender(event) {
+  if (!event || !mainWindow || mainWindow.isDestroyed()) return false;
+  return event.sender === mainWindow.webContents;
+}
+
+// Windows UNC 경로(\\server\share) 차단으로 SMB/NTLMv2 해시 유출 원천 방지
+function isSafeLocalPath(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const trimmed = filePath.trim();
+  if (trimmed.length === 0 || trimmed.length > 1024) return false;
+  if (trimmed.includes('\0') || trimmed.includes('\u0000')) return false;
+  if (trimmed.startsWith('\\\\') || trimmed.startsWith('//')) return false;
+  if (/^\\\\\?\\UNC\\/i.test(trimmed)) return false;
+  if (process.platform === 'win32') {
+    return /^[A-Za-z]:[\\/]/.test(trimmed) && path.isAbsolute(trimmed);
+  }
+  return path.isAbsolute(trimmed);
+}
+
+function isSafeImageDataUrl(val) {
+  if (typeof val !== 'string' || val.length === 0) return false;
+  if (val.length > MAX_IMAGE_DATA_URL_LENGTH) return false;
+  return SAFE_RASTER_DATA_URL_RE.test(val);
+}
+
+function normalizeFileInfo(rawFileInfo) {
+  if (!rawFileInfo || typeof rawFileInfo !== 'object') return null;
+  const rawPath = typeof rawFileInfo.path === 'string' ? rawFileInfo.path.trim() : '';
+  if (!isSafeLocalPath(rawPath)) return null;
+  const normalizedPath = path.normalize(rawPath);
+  if (!isSafeLocalPath(normalizedPath)) return null;
+  // 파일명과 확장자를 실제 경로에서 강제 추출하여 확장자 위장(Spoofing) 차단
+  const realName = path.basename(normalizedPath) || normalizedPath;
+  const realExt = path.extname(normalizedPath).toLowerCase();
+  return {
+    name: realName.slice(0, 260),
+    path: normalizedPath,
+    size:
+      typeof rawFileInfo.size === 'number' && rawFileInfo.size >= 0 && Number.isFinite(rawFileInfo.size)
+        ? rawFileInfo.size
+        : 0,
+    ext: realExt,
+    isDirectory: Boolean(rawFileInfo.isDirectory),
+    extraCount:
+      typeof rawFileInfo.extraCount === 'number' && rawFileInfo.extraCount > 0
+        ? Math.min(rawFileInfo.extraCount, 500)
+        : 0
+  };
+}
 
 function getNotesFilePath() {
   return path.join(app.getPath('userData'), 'notes-data.json');
@@ -87,22 +171,9 @@ function normalizeNote(raw) {
       ? raw.id
       : numericTimestamp;
 
-  const imageDataUrl =
-    typeof raw.imageDataUrl === 'string' && raw.imageDataUrl.startsWith('data:image/')
-      ? raw.imageDataUrl
-      : '';
+  const imageDataUrl = isSafeImageDataUrl(raw.imageDataUrl) ? raw.imageDataUrl : '';
 
-  const fileInfo =
-    raw.fileInfo && typeof raw.fileInfo === 'object'
-      ? {
-          name: typeof raw.fileInfo.name === 'string' ? raw.fileInfo.name : '',
-          path: typeof raw.fileInfo.path === 'string' ? raw.fileInfo.path : '',
-          size: typeof raw.fileInfo.size === 'number' ? raw.fileInfo.size : 0,
-          ext: typeof raw.fileInfo.ext === 'string' ? raw.fileInfo.ext : '',
-          isDirectory: Boolean(raw.fileInfo.isDirectory),
-          extraCount: typeof raw.fileInfo.extraCount === 'number' ? raw.fileInfo.extraCount : 0
-        }
-      : null;
+  const fileInfo = normalizeFileInfo(raw.fileInfo);
 
   return {
     id: raw.id !== undefined && raw.id !== null ? String(raw.id) : crypto.randomUUID(),
@@ -137,21 +208,8 @@ function normalizeNote(raw) {
 
 function normalizeTempItem(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const imageDataUrl =
-    typeof raw.imageDataUrl === 'string' && raw.imageDataUrl.startsWith('data:image/')
-      ? raw.imageDataUrl
-      : '';
-  const fileInfo =
-    raw.fileInfo && typeof raw.fileInfo === 'object'
-      ? {
-          name: typeof raw.fileInfo.name === 'string' ? raw.fileInfo.name : '',
-          path: typeof raw.fileInfo.path === 'string' ? raw.fileInfo.path : '',
-          size: typeof raw.fileInfo.size === 'number' ? raw.fileInfo.size : 0,
-          ext: typeof raw.fileInfo.ext === 'string' ? raw.fileInfo.ext : '',
-          isDirectory: Boolean(raw.fileInfo.isDirectory),
-          extraCount: typeof raw.fileInfo.extraCount === 'number' ? raw.fileInfo.extraCount : 0
-        }
-      : null;
+  const imageDataUrl = isSafeImageDataUrl(raw.imageDataUrl) ? raw.imageDataUrl : '';
+  const fileInfo = normalizeFileInfo(raw.fileInfo);
   const kind = raw.kind === 'image' ? 'image' : raw.kind === 'file' ? 'file' : 'text';
   return {
     id: raw.id ? String(raw.id) : crypto.randomUUID(),
@@ -248,25 +306,10 @@ function migratePayload(data, existingSecurity) {
           content: typeof data.draft.content === 'string' ? data.draft.content : '',
           category: typeof data.draft.category === 'string' ? data.draft.category : '📝 일반',
           tagsInput: typeof data.draft.tagsInput === 'string' ? data.draft.tagsInput : '',
-          imageDataUrl:
-            typeof data.draft.imageDataUrl === 'string' &&
-            data.draft.imageDataUrl.startsWith('data:image/')
-              ? data.draft.imageDataUrl
-              : '',
-          fileInfo:
-            data.draft.fileInfo && typeof data.draft.fileInfo === 'object'
-              ? {
-                  name: typeof data.draft.fileInfo.name === 'string' ? data.draft.fileInfo.name : '',
-                  path: typeof data.draft.fileInfo.path === 'string' ? data.draft.fileInfo.path : '',
-                  size: typeof data.draft.fileInfo.size === 'number' ? data.draft.fileInfo.size : 0,
-                  ext: typeof data.draft.fileInfo.ext === 'string' ? data.draft.fileInfo.ext : '',
-                  isDirectory: Boolean(data.draft.fileInfo.isDirectory),
-                  extraCount:
-                    typeof data.draft.fileInfo.extraCount === 'number'
-                      ? data.draft.fileInfo.extraCount
-                      : 0
-                }
-              : null
+          imageDataUrl: isSafeImageDataUrl(data.draft.imageDataUrl)
+            ? data.draft.imageDataUrl
+            : '',
+          fileInfo: normalizeFileInfo(data.draft.fileInfo)
         }
       : null;
 
@@ -376,10 +419,12 @@ function toRendererSafeResponse(stored) {
 
 function inspectLocalPath(filePath) {
   try {
-    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) return null;
-    const stat = fs.statSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const name = path.basename(filePath) || filePath;
+    if (!isSafeLocalPath(filePath)) return null;
+    const normalizedPath = path.normalize(filePath.trim());
+    if (!isSafeLocalPath(normalizedPath) || !fs.existsSync(normalizedPath)) return null;
+    const stat = fs.statSync(normalizedPath);
+    const ext = path.extname(normalizedPath).toLowerCase();
+    const name = path.basename(normalizedPath) || normalizedPath;
     const isImageFile =
       stat.isFile() &&
       stat.size <= 15 * 1024 * 1024 &&
@@ -388,12 +433,12 @@ function inspectLocalPath(filePath) {
     let imageDataUrl = '';
     if (isImageFile) {
       if (ext === '.ico') {
-        const nImg = nativeImage.createFromPath(filePath);
+        const nImg = nativeImage.createFromPath(normalizedPath);
         if (!nImg.isEmpty()) {
           imageDataUrl = nImg.toDataURL();
         }
       } else {
-        const bytes = fs.readFileSync(filePath);
+        const bytes = fs.readFileSync(normalizedPath);
         let mime = 'image/png';
         if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
         else if (ext === '.gif') mime = 'image/gif';
@@ -408,7 +453,7 @@ function inspectLocalPath(filePath) {
       imageDataUrl,
       fileInfo: {
         name,
-        path: filePath,
+        path: normalizedPath,
         size: stat.isFile() ? stat.size : 0,
         ext,
         isDirectory: stat.isDirectory(),
@@ -444,7 +489,7 @@ async function readNativeClipboard() {
                   return '';
                 }
               })
-              .filter((p) => p && fs.existsSync(p));
+              .filter((p) => isSafeLocalPath(p) && fs.existsSync(p));
 
             if (validPaths.length > 0) {
               const firstInspected = inspectLocalPath(validPaths[0]);
@@ -510,12 +555,14 @@ async function readNativeClipboard() {
             }
           }
 
-          // 3) 클립보드 비트맵/스크린샷 이미지 (image/png, image/jpeg 등)
-          const imgType = types.find((t) => t.startsWith('image/'));
+          // 3) 클립보드 비트맵/스크린샷 이미지 (안전한 래스터 이미지 포맷만 허용)
+          const imgType = types.find((t) =>
+            /^image\/(png|jpeg|jpg|gif|webp|bmp)$/i.test(t)
+          );
           if (imgType) {
             const imgBlob = await item.getType(imgType);
             const buf = Buffer.from(await imgBlob.arrayBuffer());
-            if (buf.length > 0) {
+            if (buf.length > 0 && buf.length <= 15 * 1024 * 1024) {
               return {
                 ok: true,
                 payload: {
@@ -564,11 +611,7 @@ async function readNativeClipboard() {
 async function writeNativeClipboard(payload) {
   try {
     if (!payload || typeof payload !== 'object') return { ok: false };
-    if (
-      payload.imageDataUrl &&
-      typeof payload.imageDataUrl === 'string' &&
-      payload.imageDataUrl.startsWith('data:image/')
-    ) {
+    if (isSafeImageDataUrl(payload.imageDataUrl)) {
       const nImg = nativeImage.createFromDataURL(payload.imageDataUrl);
       if (!nImg.isEmpty()) {
         if (typeof clipboard.write === 'function' && ClipboardItem) {
@@ -582,7 +625,11 @@ async function writeNativeClipboard(payload) {
         }
       }
     }
-    if (payload.filePath && typeof payload.filePath === 'string' && fs.existsSync(payload.filePath)) {
+    if (
+      payload.filePath &&
+      isSafeLocalPath(payload.filePath) &&
+      fs.existsSync(payload.filePath)
+    ) {
       if (typeof clipboard.write === 'function' && ClipboardItem) {
         try {
           const fileUri = pathToFileURL(payload.filePath).href;
@@ -702,13 +749,40 @@ app.on('second-instance', () => {
   }
 });
 
+function checkPasswordRateLimit() {
+  const now = Date.now();
+  if (passwordLockoutUntil > now) {
+    const secs = Math.ceil((passwordLockoutUntil - now) / 1000);
+    return {
+      allowed: false,
+      error: `비밀번호 입력 시도가 너무 많습니다. ${secs}초 후에 다시 시도해 주세요.`
+    };
+  }
+  return { allowed: true };
+}
+
+function recordPasswordResult(matched) {
+  if (matched) {
+    passwordFailedAttempts = 0;
+    passwordLockoutUntil = 0;
+  } else {
+    passwordFailedAttempts += 1;
+    if (passwordFailedAttempts >= MAX_PASSWORD_ATTEMPTS) {
+      passwordLockoutUntil = Date.now() + PASSWORD_LOCKOUT_MS;
+      passwordFailedAttempts = 0;
+    }
+  }
+}
+
 // IPC 핸들러 등록
-ipcMain.handle('notes:load', async () => {
+ipcMain.handle('notes:load', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   const stored = loadStoredDataInternal();
   return toRendererSafeResponse(stored);
 });
 
-ipcMain.handle('notes:save', async (_event, payload) => {
+ipcMain.handle('notes:save', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
     const existing = loadStoredDataInternal();
     const cleanData = migratePayload(payload, existing.data.security);
@@ -720,8 +794,12 @@ ipcMain.handle('notes:save', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('lock:set-password', async (_event, payload) => {
+ipcMain.handle('lock:set-password', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
+    const rate = checkPasswordRateLimit();
+    if (!rate.allowed) return { ok: false, error: rate.error };
+
     const { currentPassword, newPassword, lockOnStartup } = payload || {};
     if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 2) {
       return { ok: false, error: '비밀번호는 2자 이상 입력해 주세요.' };
@@ -737,6 +815,7 @@ ipcMain.handle('lock:set-password', async (_event, payload) => {
         existingSec.passwordSalt,
         existingSec.passwordHash
       );
+      recordPasswordResult(validCurrent);
       if (!validCurrent) {
         return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
       }
@@ -766,18 +845,27 @@ ipcMain.handle('lock:set-password', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('lock:verify-password', async (_event, password) => {
+ipcMain.handle('lock:verify-password', async (event, password) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  const rate = checkPasswordRateLimit();
+  if (!rate.allowed) return { ok: false, error: rate.error };
+
   const stored = loadStoredDataInternal();
   const sec = stored.data.security || { passwordSalt: '', passwordHash: '' };
   if (!sec.passwordSalt || !sec.passwordHash) {
     return { ok: true };
   }
   const matched = verifyPasswordWithHash(password, sec.passwordSalt, sec.passwordHash);
+  recordPasswordResult(matched);
   return { ok: matched };
 });
 
-ipcMain.handle('lock:remove-password', async (_event, currentPassword) => {
+ipcMain.handle('lock:remove-password', async (event, currentPassword) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
+    const rate = checkPasswordRateLimit();
+    if (!rate.allowed) return { ok: false, error: rate.error };
+
     const stored = loadStoredDataInternal();
     const sec = stored.data.security || { passwordSalt: '', passwordHash: '' };
     if (sec.passwordSalt && sec.passwordHash) {
@@ -786,6 +874,7 @@ ipcMain.handle('lock:remove-password', async (_event, currentPassword) => {
         sec.passwordSalt,
         sec.passwordHash
       );
+      recordPasswordResult(matched);
       if (!matched) {
         return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
       }
@@ -806,15 +895,18 @@ ipcMain.handle('lock:remove-password', async (_event, currentPassword) => {
   }
 });
 
-ipcMain.handle('clipboard:read', async () => {
+ipcMain.handle('clipboard:read', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return await readNativeClipboard();
 });
 
-ipcMain.handle('clipboard:write', async (_event, payload) => {
+ipcMain.handle('clipboard:write', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return await writeNativeClipboard(payload);
 });
 
-ipcMain.handle('file:pick', async (_event, options) => {
+ipcMain.handle('file:pick', async (event, options) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
     const mode = options?.mode || 'any';
     const filters =
@@ -832,7 +924,7 @@ ipcMain.handle('file:pick', async (_event, options) => {
     }
     const inspected = inspectLocalPath(filePaths[0]);
     if (!inspected) {
-      return { ok: false, error: '선택한 파일을 읽을 수 없습니다.' };
+      return { ok: false, error: '선택한 파일을 읽을 수 없습니다. (네트워크 드라이브/UNC 경로는 차단됩니다)' };
     }
     return { ok: true, ...inspected };
   } catch (err) {
@@ -840,7 +932,8 @@ ipcMain.handle('file:pick', async (_event, options) => {
   }
 });
 
-ipcMain.handle('file:inspect', async (_event, filePath) => {
+ipcMain.handle('file:inspect', async (event, filePath) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   const inspected = inspectLocalPath(filePath);
   if (!inspected) {
     return { ok: false, error: '파일을 읽을 수 없습니다.' };
@@ -848,12 +941,38 @@ ipcMain.handle('file:inspect', async (_event, filePath) => {
   return { ok: true, ...inspected };
 });
 
-ipcMain.handle('file:open', async (_event, filePath) => {
+ipcMain.handle('file:open', async (event, filePath) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
-    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+    if (!isSafeLocalPath(filePath)) {
+      return { ok: false, error: '보안상 로컬 드라이브 경로의 파일만 열 수 있습니다.' };
+    }
+    const normalizedPath = path.normalize(filePath.trim());
+    if (!isSafeLocalPath(normalizedPath) || !fs.existsSync(normalizedPath)) {
       return { ok: false, error: '해당 경로에 파일이 존재하지 않습니다.' };
     }
-    const errMsg = await shell.openPath(filePath);
+
+    const ext = path.extname(normalizedPath).toLowerCase();
+    if (DANGEROUS_EXTENSIONS.has(ext)) {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['취소', '폴더에서 보기', '실행하기'],
+        defaultId: 0,
+        cancelId: 0,
+        title: '보안 경고: 실행 가능한 파일',
+        message: `"${path.basename(normalizedPath)}" 파일은 프로그램 또는 스크립트(${ext})입니다.`,
+        detail: `경로: ${normalizedPath}\n\n신뢰할 수 있는 파일인지 확인한 후 실행해 주세요.`
+      });
+      if (response === 0) {
+        return { ok: true, canceled: true };
+      }
+      if (response === 1) {
+        shell.showItemInFolder(normalizedPath);
+        return { ok: true };
+      }
+    }
+
+    const errMsg = await shell.openPath(normalizedPath);
     if (errMsg) return { ok: false, error: errMsg };
     return { ok: true };
   } catch (err) {
@@ -861,19 +980,25 @@ ipcMain.handle('file:open', async (_event, filePath) => {
   }
 });
 
-ipcMain.handle('file:show-in-folder', async (_event, filePath) => {
+ipcMain.handle('file:show-in-folder', async (event, filePath) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
-    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+    if (!isSafeLocalPath(filePath)) {
+      return { ok: false, error: '보안상 로컬 드라이브 경로만 열 수 있습니다.' };
+    }
+    const normalizedPath = path.normalize(filePath.trim());
+    if (!isSafeLocalPath(normalizedPath) || !fs.existsSync(normalizedPath)) {
       return { ok: false, error: '해당 경로에 파일이 존재하지 않습니다.' };
     }
-    shell.showItemInFolder(filePath);
+    shell.showItemInFolder(normalizedPath);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-ipcMain.handle('notes:export', async (_event, payload) => {
+ipcMain.handle('notes:export', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
     const existing = loadStoredDataInternal();
     const cleanData = migratePayload(payload, { passwordSalt: '', passwordHash: '' });
@@ -900,7 +1025,8 @@ ipcMain.handle('notes:export', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('notes:import', async () => {
+ipcMain.handle('notes:import', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   try {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
       title: '노트 및 클립 백업 가져오기',
@@ -909,6 +1035,10 @@ ipcMain.handle('notes:import', async () => {
     });
     if (canceled || !filePaths || filePaths.length === 0) {
       return { ok: false, canceled: true };
+    }
+    const stat = fs.statSync(filePaths[0]);
+    if (stat.size > 50 * 1024 * 1024) {
+      return { ok: false, error: '백업 파일 크기가 허용 한도(50MB)를 초과합니다.' };
     }
     const raw = fs.readFileSync(filePaths[0], 'utf8');
     const parsed = JSON.parse(raw);
@@ -920,7 +1050,8 @@ ipcMain.handle('notes:import', async () => {
   }
 });
 
-ipcMain.handle('theme:set', (_event, isDark) => {
+ipcMain.handle('theme:set', (event, isDark) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   nativeTheme.themeSource = isDark ? 'dark' : 'light';
   if (
     mainWindow &&
@@ -940,7 +1071,8 @@ ipcMain.handle('theme:set', (_event, isDark) => {
   return { ok: true };
 });
 
-ipcMain.handle('app:info', () => {
+ipcMain.handle('app:info', (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return {
     version: app.getVersion(),
     userDataPath: app.getPath('userData'),
@@ -1019,6 +1151,13 @@ function setupAutoUpdater() {
 }
 
 app.whenReady().then(() => {
+  if (session && session.defaultSession) {
+    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+      callback(false);
+    });
+    session.defaultSession.setPermissionCheckHandler(() => false);
+  }
+
   const stored = loadStoredDataInternal();
   const isDarkInitial = stored.data.settings.isDark;
   nativeTheme.themeSource = isDarkInitial ? 'dark' : 'light';

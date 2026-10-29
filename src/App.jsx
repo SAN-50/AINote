@@ -1043,11 +1043,11 @@ export default function App() {
       if (res?.ok) {
         setIsLocked(false);
         showToast('잠금이 해제되었습니다 ✓', 'success');
-        return true;
+        return { ok: true };
       }
-      return false;
+      return { ok: false, error: res?.error || '' };
     }
-    return false;
+    return { ok: false };
   };
 
   const handleSavePassword = async (payload) => {

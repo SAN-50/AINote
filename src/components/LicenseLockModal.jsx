@@ -5,6 +5,7 @@ import { IconLock, IconClose } from './Icons';
 export function PasswordLockScreen({ isLocked, onVerify }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const [shakeKey, setShakeKey] = useState(0);
   const inputRef = useRef(null);
 
@@ -19,12 +20,18 @@ export function PasswordLockScreen({ isLocked, onVerify }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!password) return;
-    const ok = await onVerify(password);
+    const res = await onVerify(password);
+    const ok = typeof res === 'object' ? Boolean(res?.ok) : Boolean(res);
     if (ok) {
       setPassword('');
       setError(false);
+      setErrorMessage('');
     } else {
       setError(true);
+      setErrorMessage(
+        (typeof res === 'object' && res?.error) ||
+          '비밀번호가 일치하지 않습니다. 다시 시도해 주세요.'
+      );
       setShakeKey((k) => k + 1);
       setPassword('');
       inputRef.current?.focus();
@@ -96,7 +103,7 @@ export function PasswordLockScreen({ isLocked, onVerify }) {
 
           {error && (
             <p key={shakeKey} className="text-xs text-red-400 font-semibold mt-1 animate-bounce">
-              비밀번호가 일치하지 않습니다. 다시 시도해 주세요.
+              {errorMessage || '비밀번호가 일치하지 않습니다. 다시 시도해 주세요.'}
             </p>
           )}
         </form>
