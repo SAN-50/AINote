@@ -7,11 +7,13 @@ const {
   shell,
   Menu,
   clipboard,
+  ClipboardItem,
   nativeImage
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { fileURLToPath, pathToFileURL } = require('url');
 
 // 1. UserData 경로 고정 (%APPDATA%\ainote)
 const appDataRoot = app.getPath('appData');
@@ -90,6 +92,18 @@ function normalizeNote(raw) {
       ? raw.imageDataUrl
       : '';
 
+  const fileInfo =
+    raw.fileInfo && typeof raw.fileInfo === 'object'
+      ? {
+          name: typeof raw.fileInfo.name === 'string' ? raw.fileInfo.name : '',
+          path: typeof raw.fileInfo.path === 'string' ? raw.fileInfo.path : '',
+          size: typeof raw.fileInfo.size === 'number' ? raw.fileInfo.size : 0,
+          ext: typeof raw.fileInfo.ext === 'string' ? raw.fileInfo.ext : '',
+          isDirectory: Boolean(raw.fileInfo.isDirectory),
+          extraCount: typeof raw.fileInfo.extraCount === 'number' ? raw.fileInfo.extraCount : 0
+        }
+      : null;
+
   return {
     id: raw.id !== undefined && raw.id !== null ? String(raw.id) : crypto.randomUUID(),
     title: typeof raw.title === 'string' ? raw.title.slice(0, 500) : '',
@@ -99,6 +113,7 @@ function normalizeNote(raw) {
     pinned: Boolean(raw.pinned),
     copied: typeof raw.copied === 'number' && raw.copied >= 0 ? raw.copied : 0,
     imageDataUrl,
+    fileInfo,
     date:
       typeof raw.date === 'string'
         ? raw.date
@@ -126,12 +141,25 @@ function normalizeTempItem(raw) {
     typeof raw.imageDataUrl === 'string' && raw.imageDataUrl.startsWith('data:image/')
       ? raw.imageDataUrl
       : '';
+  const fileInfo =
+    raw.fileInfo && typeof raw.fileInfo === 'object'
+      ? {
+          name: typeof raw.fileInfo.name === 'string' ? raw.fileInfo.name : '',
+          path: typeof raw.fileInfo.path === 'string' ? raw.fileInfo.path : '',
+          size: typeof raw.fileInfo.size === 'number' ? raw.fileInfo.size : 0,
+          ext: typeof raw.fileInfo.ext === 'string' ? raw.fileInfo.ext : '',
+          isDirectory: Boolean(raw.fileInfo.isDirectory),
+          extraCount: typeof raw.fileInfo.extraCount === 'number' ? raw.fileInfo.extraCount : 0
+        }
+      : null;
+  const kind = raw.kind === 'image' ? 'image' : raw.kind === 'file' ? 'file' : 'text';
   return {
     id: raw.id ? String(raw.id) : crypto.randomUUID(),
-    kind: raw.kind === 'image' ? 'image' : 'text',
+    kind,
     title: typeof raw.title === 'string' ? raw.title.slice(0, 300) : '클립보드 항목',
     content: typeof raw.content === 'string' ? raw.content : '',
     imageDataUrl,
+    fileInfo,
     detectedAt: typeof raw.detectedAt === 'string' ? raw.detectedAt : new Date().toISOString(),
     addedAt: typeof raw.addedAt === 'string' ? raw.addedAt : new Date().toISOString()
   };
@@ -224,7 +252,21 @@ function migratePayload(data, existingSecurity) {
             typeof data.draft.imageDataUrl === 'string' &&
             data.draft.imageDataUrl.startsWith('data:image/')
               ? data.draft.imageDataUrl
-              : ''
+              : '',
+          fileInfo:
+            data.draft.fileInfo && typeof data.draft.fileInfo === 'object'
+              ? {
+                  name: typeof data.draft.fileInfo.name === 'string' ? data.draft.fileInfo.name : '',
+                  path: typeof data.draft.fileInfo.path === 'string' ? data.draft.fileInfo.path : '',
+                  size: typeof data.draft.fileInfo.size === 'number' ? data.draft.fileInfo.size : 0,
+                  ext: typeof data.draft.fileInfo.ext === 'string' ? data.draft.fileInfo.ext : '',
+                  isDirectory: Boolean(data.draft.fileInfo.isDirectory),
+                  extraCount:
+                    typeof data.draft.fileInfo.extraCount === 'number'
+                      ? data.draft.fileInfo.extraCount
+                      : 0
+                }
+              : null
         }
       : null;
 
@@ -332,74 +374,185 @@ function toRendererSafeResponse(stored) {
   };
 }
 
-// 안전한 네이티브 클립보드 읽기
-function readNativeClipboard() {
+function inspectLocalPath(filePath) {
   try {
-    const fileBuf = clipboard.readBuffer('FileNameW');
-    if (fileBuf && fileBuf.length > 0) {
-      const filePath = fileBuf
-        .toString('utf16le')
-        .replace(/\0.*$/, '')
-        .replace(/\u0000.*$/, '')
-        .trim();
-      const lower = filePath.toLowerCase();
-      const isImageFile = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].some((ext) =>
-        lower.endsWith(ext)
-      );
-      if (isImageFile && fs.existsSync(filePath)) {
-        const stat = fs.statSync(filePath);
-        if (stat.isFile() && stat.size <= 15 * 1024 * 1024) {
-          const bytes = fs.readFileSync(filePath);
-          let mime = 'image/png';
-          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) mime = 'image/jpeg';
-          else if (lower.endsWith('.gif')) mime = 'image/gif';
-          else if (lower.endsWith('.webp')) mime = 'image/webp';
-          else if (lower.endsWith('.bmp')) mime = 'image/bmp';
+    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) return null;
+    const stat = fs.statSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const name = path.basename(filePath) || filePath;
+    const isImageFile =
+      stat.isFile() &&
+      stat.size <= 15 * 1024 * 1024 &&
+      ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'].includes(ext);
 
-          return {
-            ok: true,
-            payload: {
-              kind: 'image',
-              title: path.basename(filePath) || '클립보드 이미지',
-              content: filePath,
-              imageDataUrl: `data:${mime};base64,${bytes.toString('base64')}`,
-              detectedAt: new Date().toISOString()
-            }
-          };
+    let imageDataUrl = '';
+    if (isImageFile) {
+      if (ext === '.ico') {
+        const nImg = nativeImage.createFromPath(filePath);
+        if (!nImg.isEmpty()) {
+          imageDataUrl = nImg.toDataURL();
         }
+      } else {
+        const bytes = fs.readFileSync(filePath);
+        let mime = 'image/png';
+        if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+        else if (ext === '.gif') mime = 'image/gif';
+        else if (ext === '.webp') mime = 'image/webp';
+        else if (ext === '.bmp') mime = 'image/bmp';
+        imageDataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
       }
     }
 
-    const img = clipboard.readImage();
-    if (img && !img.isEmpty()) {
-      const dataUrl = img.toDataURL();
-      if (dataUrl && dataUrl.startsWith('data:image/')) {
+    return {
+      isImage: Boolean(imageDataUrl),
+      imageDataUrl,
+      fileInfo: {
+        name,
+        path: filePath,
+        size: stat.isFile() ? stat.size : 0,
+        ext,
+        isDirectory: stat.isDirectory(),
+        extraCount: 0
+      }
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
+// 안전한 네이티브 클립보드 읽기 (Electron 45 비동기 ClipboardItem API + 파일/이미지/텍스트 통합 지원)
+async function readNativeClipboard() {
+  try {
+    if (typeof clipboard.read === 'function') {
+      try {
+        const items = await clipboard.read();
+        for (const item of items || []) {
+          const types = Array.isArray(item?.types) ? item.types : [];
+
+          // 1) 탐색기에서 복사한 파일/폴더 (text/uri-list)
+          if (types.includes('text/uri-list')) {
+            const uriBlob = await item.getType('text/uri-list');
+            const uriText = await uriBlob.text();
+            const validPaths = uriText
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter((l) => l && !l.startsWith('#'))
+              .map((u) => {
+                try {
+                  return fileURLToPath(u);
+                } catch (_e) {
+                  return '';
+                }
+              })
+              .filter((p) => p && fs.existsSync(p));
+
+            if (validPaths.length > 0) {
+              const firstInspected = inspectLocalPath(validPaths[0]);
+              if (firstInspected) {
+                if (validPaths.length === 1 && firstInspected.isImage && firstInspected.imageDataUrl) {
+                  return {
+                    ok: true,
+                    payload: {
+                      kind: 'image',
+                      title: firstInspected.fileInfo.name || '클립보드 이미지',
+                      content: validPaths[0],
+                      imageDataUrl: firstInspected.imageDataUrl,
+                      fileInfo: firstInspected.fileInfo,
+                      detectedAt: new Date().toISOString()
+                    }
+                  };
+                }
+                return {
+                  ok: true,
+                  payload: {
+                    kind: 'file',
+                    title:
+                      validPaths.length > 1
+                        ? `${firstInspected.fileInfo.name} 외 ${validPaths.length - 1}개`
+                        : firstInspected.fileInfo.name,
+                    content: validPaths.join('\n'),
+                    imageDataUrl: firstInspected.imageDataUrl || '',
+                    fileInfo: {
+                      ...firstInspected.fileInfo,
+                      extraCount: validPaths.length - 1
+                    },
+                    detectedAt: new Date().toISOString()
+                  }
+                };
+              }
+            }
+          }
+
+          // 2) Windows OS 클립보드 FileName / FileNameW 포맷 폴백
+          const fileNameFormat = types.find(
+            (t) => t.includes('format="FileNameW"') || t.includes('format="FileName"')
+          );
+          if (fileNameFormat) {
+            const fileBlob = await item.getType(fileNameFormat);
+            const buf = Buffer.from(await fileBlob.arrayBuffer());
+            const decoded = fileNameFormat.includes('FileNameW')
+              ? buf.toString('utf16le')
+              : buf.toString('utf8');
+            const cleanPath = decoded.replace(/\0.*$/, '').replace(/\u0000.*$/, '').trim();
+            const inspected = inspectLocalPath(cleanPath);
+            if (inspected) {
+              return {
+                ok: true,
+                payload: {
+                  kind: inspected.isImage ? 'image' : 'file',
+                  title: inspected.fileInfo.name,
+                  content: cleanPath,
+                  imageDataUrl: inspected.imageDataUrl || '',
+                  fileInfo: inspected.fileInfo,
+                  detectedAt: new Date().toISOString()
+                }
+              };
+            }
+          }
+
+          // 3) 클립보드 비트맵/스크린샷 이미지 (image/png, image/jpeg 등)
+          const imgType = types.find((t) => t.startsWith('image/'));
+          if (imgType) {
+            const imgBlob = await item.getType(imgType);
+            const buf = Buffer.from(await imgBlob.arrayBuffer());
+            if (buf.length > 0) {
+              return {
+                ok: true,
+                payload: {
+                  kind: 'image',
+                  title: '클립보드 이미지',
+                  content: '',
+                  imageDataUrl: `data:${imgType};base64,${buf.toString('base64')}`,
+                  fileInfo: null,
+                  detectedAt: new Date().toISOString()
+                }
+              };
+            }
+          }
+        }
+      } catch (_readErr) {
+        // clipboard.read() 실패 시 아래 readText()로 안전하게 폴백
+      }
+    }
+
+    // 4) 일반 텍스트 클립보드 읽기 (Promise 및 동기 반환 모두 호환)
+    if (typeof clipboard.readText === 'function') {
+      const rawText = await clipboard.readText();
+      const text = typeof rawText === 'string' ? rawText : '';
+      if (text.trim().length > 0) {
+        const firstLine = text.trim().split(/\r?\n/)[0].slice(0, 50);
         return {
           ok: true,
           payload: {
-            kind: 'image',
-            title: '클립보드 이미지',
-            content: '',
-            imageDataUrl: dataUrl,
+            kind: 'text',
+            title: firstLine || '클립보드 텍스트',
+            content: text,
+            imageDataUrl: '',
+            fileInfo: null,
             detectedAt: new Date().toISOString()
           }
         };
       }
-    }
-
-    const text = clipboard.readText();
-    if (text && text.trim().length > 0) {
-      const firstLine = text.trim().split(/\r?\n/)[0].slice(0, 40);
-      return {
-        ok: true,
-        payload: {
-          kind: 'text',
-          title: firstLine || '클립보드 텍스트',
-          content: text,
-          imageDataUrl: '',
-          detectedAt: new Date().toISOString()
-        }
-      };
     }
 
     return { ok: true, payload: null };
@@ -408,7 +561,7 @@ function readNativeClipboard() {
   }
 }
 
-function writeNativeClipboard(payload) {
+async function writeNativeClipboard(payload) {
   try {
     if (!payload || typeof payload !== 'object') return { ok: false };
     if (
@@ -418,12 +571,39 @@ function writeNativeClipboard(payload) {
     ) {
       const nImg = nativeImage.createFromDataURL(payload.imageDataUrl);
       if (!nImg.isEmpty()) {
-        clipboard.writeImage(nImg);
-        return { ok: true };
+        if (typeof clipboard.write === 'function' && ClipboardItem) {
+          const pngBuf = nImg.toPNG();
+          const imgBlob = new Blob([pngBuf], { type: 'image/png' });
+          await clipboard.write([new ClipboardItem({ 'image/png': imgBlob })]);
+          return { ok: true };
+        } else if (typeof clipboard.writeImage === 'function') {
+          clipboard.writeImage(nImg);
+          return { ok: true };
+        }
       }
     }
+    if (payload.filePath && typeof payload.filePath === 'string' && fs.existsSync(payload.filePath)) {
+      if (typeof clipboard.write === 'function' && ClipboardItem) {
+        try {
+          const fileUri = pathToFileURL(payload.filePath).href;
+          const uriBlob = new Blob([fileUri], { type: 'text/uri-list' });
+          const textBlob = new Blob([payload.filePath], { type: 'text/plain' });
+          await clipboard.write([
+            new ClipboardItem({
+              'text/uri-list': uriBlob,
+              'text/plain': textBlob
+            })
+          ]);
+          return { ok: true };
+        } catch (_e) {
+          // 폴백: 경로 텍스트 복사
+        }
+      }
+      await clipboard.writeText(payload.filePath);
+      return { ok: true };
+    }
     if (typeof payload.text === 'string' && payload.text.length > 0) {
-      clipboard.writeText(payload.text);
+      await clipboard.writeText(payload.text);
       return { ok: true };
     }
     return { ok: false };
@@ -627,11 +807,70 @@ ipcMain.handle('lock:remove-password', async (_event, currentPassword) => {
 });
 
 ipcMain.handle('clipboard:read', async () => {
-  return readNativeClipboard();
+  return await readNativeClipboard();
 });
 
 ipcMain.handle('clipboard:write', async (_event, payload) => {
-  return writeNativeClipboard(payload);
+  return await writeNativeClipboard(payload);
+});
+
+ipcMain.handle('file:pick', async (_event, options) => {
+  try {
+    const mode = options?.mode || 'any';
+    const filters =
+      mode === 'image'
+        ? [{ name: '이미지 파일', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'] }]
+        : [{ name: '모든 파일', extensions: ['*'] }];
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: mode === 'image' ? '이미지 선택' : '첨부할 파일 선택',
+      properties: ['openFile'],
+      filters
+    });
+    if (canceled || !filePaths || filePaths.length === 0) {
+      return { ok: false, canceled: true };
+    }
+    const inspected = inspectLocalPath(filePaths[0]);
+    if (!inspected) {
+      return { ok: false, error: '선택한 파일을 읽을 수 없습니다.' };
+    }
+    return { ok: true, ...inspected };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('file:inspect', async (_event, filePath) => {
+  const inspected = inspectLocalPath(filePath);
+  if (!inspected) {
+    return { ok: false, error: '파일을 읽을 수 없습니다.' };
+  }
+  return { ok: true, ...inspected };
+});
+
+ipcMain.handle('file:open', async (_event, filePath) => {
+  try {
+    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+      return { ok: false, error: '해당 경로에 파일이 존재하지 않습니다.' };
+    }
+    const errMsg = await shell.openPath(filePath);
+    if (errMsg) return { ok: false, error: errMsg };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('file:show-in-folder', async (_event, filePath) => {
+  try {
+    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+      return { ok: false, error: '해당 경로에 파일이 존재하지 않습니다.' };
+    }
+    shell.showItemInFolder(filePath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('notes:export', async (_event, payload) => {

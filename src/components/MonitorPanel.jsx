@@ -1,5 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TEMP_TTL_MS } from '../constants';
+import { IconFile, IconFolder } from './Icons';
+
+export function formatFileSize(bytes) {
+  if (!bytes || typeof bytes !== 'number' || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 export function getTempTimeInfo(addedAt) {
   const added = new Date(addedAt).getTime();
@@ -25,6 +34,13 @@ export function getTempTimeInfo(addedAt) {
   };
 }
 
+const TEMP_FILTER_TABS = [
+  { id: 'all', label: '전체' },
+  { id: 'text', label: '📝 텍스트' },
+  { id: 'image', label: '🖼️ 이미지' },
+  { id: 'file', label: '📎 파일' }
+];
+
 export function MonitorPanel({
   isMonitoring,
   onToggleMonitor,
@@ -36,9 +52,12 @@ export function MonitorPanel({
   onSaveTempItem,
   onSaveAllTemp,
   onDeleteTempItem,
-  onClearExpiredTemp
+  onClearExpiredTemp,
+  onOpenFilePath,
+  onShowFileInFolder
 }) {
   const [detectedTags, setDetectedTags] = useState('');
+  const [tempTab, setTempTab] = useState('all');
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -50,6 +69,21 @@ export function MonitorPanel({
     onSaveDetected(detectedTags);
     setDetectedTags('');
   };
+
+  const tempCounts = useMemo(() => {
+    const counts = { all: tempQueue.length, text: 0, image: 0, file: 0 };
+    for (const item of tempQueue) {
+      if (item.kind === 'image') counts.image += 1;
+      else if (item.kind === 'file') counts.file += 1;
+      else counts.text += 1;
+    }
+    return counts;
+  }, [tempQueue]);
+
+  const filteredTempQueue = useMemo(() => {
+    if (tempTab === 'all') return tempQueue;
+    return tempQueue.filter((item) => (item.kind || 'text') === tempTab);
+  }, [tempQueue, tempTab]);
 
   return (
     <section className="bg-surface-light dark:bg-surface-dark p-6 rounded-[20px] shadow-sm border border-line-light dark:border-line-dark flex flex-col gap-5 animate-modal">
@@ -67,7 +101,7 @@ export function MonitorPanel({
               클립보드 자동 감지
             </h2>
             <p className="text-xs text-zinc-500 dark:text-gray-400">
-              복사한 텍스트와 이미지를 실시간으로 감지하고 72시간 임시 보관함에 수집합니다.
+              복사한 텍스트, 이미지, 파일(Ctrl+C)을 실시간 감지하고 72시간 임시 보관함에 분류 수집합니다.
             </p>
           </div>
         </div>
@@ -122,6 +156,8 @@ export function MonitorPanel({
             {detectedClipboard
               ? detectedClipboard.kind === 'image'
                 ? '🖼️ 이미지 감지됨'
+                : detectedClipboard.kind === 'file'
+                ? '📎 파일 감지됨'
                 : '📝 텍스트 감지됨'
               : '감지 대기 중'}
           </span>
@@ -133,20 +169,64 @@ export function MonitorPanel({
         </div>
 
         <h3 className="text-sm font-bold text-zinc-900 dark:text-gray-100 truncate">
-          {detectedClipboard ? detectedClipboard.title : '새로 복사한 내용이 여기에 표시됩니다.'}
+          {detectedClipboard ? detectedClipboard.title : '새로 복사한 텍스트·이미지·파일이 여기에 표시됩니다.'}
         </h3>
 
-        {detectedClipboard?.imageDataUrl ? (
+        {detectedClipboard?.imageDataUrl && (
           <img
             src={detectedClipboard.imageDataUrl}
             alt="클립보드 이미지 미리보기"
             className="w-full max-h-48 object-contain rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark"
           />
-        ) : (
+        )}
+
+        {detectedClipboard?.fileInfo && (
+          <div className="p-3 rounded-xl bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 grid place-items-center shrink-0">
+                <IconFile />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-zinc-800 dark:text-gray-100 truncate">
+                    {detectedClipboard.fileInfo.name}
+                  </span>
+                  {detectedClipboard.fileInfo.size > 0 && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-500 shrink-0">
+                      {formatFileSize(detectedClipboard.fileInfo.size)}
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                  {detectedClipboard.fileInfo.path}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => onOpenFilePath?.(detectedClipboard.fileInfo.path)}
+                className="px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 hover:text-white text-zinc-700 dark:text-zinc-200 text-[11px] font-bold border border-line-light dark:border-line-dark transition-colors"
+              >
+                열기
+              </button>
+              <button
+                type="button"
+                onClick={() => onShowFileInFolder?.(detectedClipboard.fileInfo.path)}
+                className="px-2 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-600 dark:text-zinc-300 text-[11px] font-semibold border border-line-light dark:border-line-dark transition-colors flex items-center gap-1"
+                title="폴더에서 보기"
+              >
+                <IconFolder />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!detectedClipboard?.imageDataUrl && !detectedClipboard?.fileInfo && (
           <p className="text-xs text-zinc-600 dark:text-gray-300 line-clamp-3 whitespace-pre-wrap break-words leading-relaxed">
             {detectedClipboard
               ? detectedClipboard.content
-              : '텍스트나 이미지를 복사(Ctrl+C)하면 자동으로 미리보기가 나타납니다.'}
+              : '텍스트, 스크린샷 이미지, 또는 탐색기 파일을 복사(Ctrl+C)하면 자동으로 미리보기가 나타납니다.'}
           </p>
         )}
 
@@ -169,7 +249,7 @@ export function MonitorPanel({
         </div>
       </div>
 
-      {/* 72h Temp Queue Section */}
+      {/* 72h Temp Queue Section with Type Tabs */}
       <div className="pt-4 border-t border-line-light dark:border-line-dark flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
@@ -202,14 +282,47 @@ export function MonitorPanel({
           </div>
         </div>
 
-        {tempQueue.length === 0 ? (
+        {/* 임시 보관함 유형별 칸 (전체 / 텍스트 / 이미지 / 파일) */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {TEMP_FILTER_TABS.map((tab) => {
+            const active = tempTab === tab.id;
+            const count = tempCounts[tab.id] || 0;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setTempTab(tab.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                    : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 border-line-light dark:border-line-dark hover:bg-muted-light dark:hover:bg-muted-dark'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-md font-extrabold ${
+                    active ? 'bg-white/20 text-white' : 'bg-muted-light dark:bg-muted-dark text-zinc-500'
+                  }`}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {filteredTempQueue.length === 0 ? (
           <div className="py-8 text-center text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-2xl text-xs">
-            수집된 임시 항목이 없습니다. 감지를 시작하고 복사해 보세요.
+            {tempQueue.length === 0
+              ? '수집된 임시 항목이 없습니다. 감지를 시작하고 텍스트·이미지·파일을 복사해 보세요.'
+              : '선택한 유형의 임시 항목이 없습니다.'}
           </div>
         ) : (
           <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
-            {tempQueue.map((item) => {
+            {filteredTempQueue.map((item) => {
               const info = getTempTimeInfo(item.addedAt);
+              const kindBadge =
+                item.kind === 'image' ? '🖼️ 이미지' : item.kind === 'file' ? '📎 파일' : '📝 텍스트';
               return (
                 <div
                   key={item.id}
@@ -220,13 +333,28 @@ export function MonitorPanel({
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 text-[10px] font-bold shrink-0 border border-line-light dark:border-line-dark">
-                        {item.kind === 'image' ? '이미지' : '텍스트'}
+                        {kindBadge}
                       </span>
                       <span className="text-xs font-bold text-zinc-800 dark:text-gray-100 truncate">
                         {item.title}
                       </span>
+                      {item.fileInfo?.size > 0 && (
+                        <span className="text-[10px] text-zinc-400 shrink-0">
+                          ({formatFileSize(item.fileInfo.size)})
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      {item.fileInfo?.path && (
+                        <button
+                          type="button"
+                          onClick={() => onShowFileInFolder?.(item.fileInfo.path)}
+                          className="px-2 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-600 dark:text-zinc-300 text-[11px] font-semibold border border-line-light dark:border-line-dark transition-colors"
+                          title="폴더에서 보기"
+                        >
+                          폴더
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onSaveTempItem(item.id)}

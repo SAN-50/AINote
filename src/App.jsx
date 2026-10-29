@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { CATEGORIES, FILTER_CATEGORIES } from './constants';
+import { CATEGORIES, FILTER_CATEGORIES, CONTENT_TYPE_TABS } from './constants';
 import {
   sanitizeNoteHtml,
   getPlainText,
@@ -17,12 +17,15 @@ import {
   IconPin,
   IconEye,
   IconLock,
-  IconImage
+  IconImage,
+  IconFile,
+  IconFolder,
+  IconPaperclip
 } from './components/Icons';
 import { CustomSelect } from './components/CustomSelect';
 import { FormattingBar } from './components/FormattingBar';
 import { PasswordLockScreen, PasswordSetupModal } from './components/LicenseLockModal';
-import { MonitorPanel, getTempTimeInfo } from './components/MonitorPanel';
+import { MonitorPanel, getTempTimeInfo, formatFileSize } from './components/MonitorPanel';
 
 const api = typeof window !== 'undefined' ? window.treeNoteAPI : null;
 
@@ -76,10 +79,22 @@ function formatCreatedDateTime(note) {
 
 function buildClipboardSignature(payload) {
   if (!payload) return '';
+  if (payload.kind === 'file' && payload.fileInfo?.path) {
+    return `file:${payload.fileInfo.path}:${payload.fileInfo.extraCount || 0}`;
+  }
   if (payload.imageDataUrl) {
     return `image:${payload.imageDataUrl.slice(0, 140)}:${payload.imageDataUrl.length}`;
   }
   return `text:${payload.content || ''}`;
+}
+
+function getNoteContentType(note) {
+  if (note.fileInfo?.path && !note.imageDataUrl) return 'file';
+  if (note.category === '📎 파일') return 'file';
+  if (note.imageDataUrl || note.category === '🖼️ 이미지') return 'image';
+  const plain = (note._plainText || '').trim();
+  if (note.category === '🔗 링크' || /^https?:\/\/\S+/i.test(plain)) return 'link';
+  return 'text';
 }
 
 export default function App() {
@@ -108,6 +123,8 @@ export default function App() {
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [tagsInput, setTagsInput] = useState('');
   const [attachedImage, setAttachedImage] = useState('');
+  const [attachedFile, setAttachedFile] = useState(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isSelectOpen, setIsSelectOpen] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
@@ -115,6 +132,7 @@ export default function App() {
   // Filter & Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState(FILTER_CATEGORIES[0]);
+  const [contentTypeTab, setContentTypeTab] = useState('all'); // 'all' | 'text' | 'image' | 'file' | 'link'
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState('최신순');
   const [viewLayout, setViewLayout] = useState('grid'); // 'grid' | 'list'
@@ -238,6 +256,7 @@ export default function App() {
             pinned: Boolean(n.pinned),
             copied: typeof n.copied === 'number' ? n.copied : 0,
             imageDataUrl: typeof n.imageDataUrl === 'string' ? n.imageDataUrl : '',
+            fileInfo: n.fileInfo && typeof n.fileInfo === 'object' ? n.fileInfo : null,
             content: normalizeContentToSafeHtml(n.content || '')
           }));
         }
@@ -256,6 +275,7 @@ export default function App() {
           (initialDraft.title ||
             getPlainText(initialDraft.content) ||
             initialDraft.imageDataUrl ||
+            initialDraft.fileInfo ||
             initialDraft.tagsInput)
         ) {
           setTitle(initialDraft.title || '');
@@ -264,6 +284,7 @@ export default function App() {
           setCategory(initialDraft.category || CATEGORIES[0]);
           setTagsInput(initialDraft.tagsInput || '');
           setAttachedImage(initialDraft.imageDataUrl || '');
+          setAttachedFile(initialDraft.fileInfo || null);
           if (mainEditorRef.current) {
             mainEditorRef.current.innerHTML = safeDraftHtml;
           }
@@ -343,13 +364,18 @@ export default function App() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
     const draftObj =
-      title.trim() || getPlainText(content).trim() || attachedImage || tagsInput.trim()
+      title.trim() ||
+      getPlainText(content).trim() ||
+      attachedImage ||
+      attachedFile ||
+      tagsInput.trim()
         ? {
             title,
             content: sanitizeNoteHtml(content),
             category,
             tagsInput,
-            imageDataUrl: attachedImage
+            imageDataUrl: attachedImage,
+            fileInfo: attachedFile
           }
         : null;
 
@@ -380,24 +406,32 @@ export default function App() {
     category,
     tagsInput,
     attachedImage,
+    attachedFile,
     isLoaded,
     corruptWarning,
     persistPayload
   ]);
 
-  // 4. 클립보드 감지 및 72시간 임시 큐 추가
+  // 4. 클립보드 감지 및 72시간 임시 큐 추가 (텍스트 / 이미지 / 파일 모두 지원)
   const addToTempQueue = useCallback(
     (payload) => {
       setTempQueue((prev) => {
         const sig = buildClipboardSignature(payload);
         const exists = prev.some((item) => buildClipboardSignature(item) === sig);
         if (exists) return prev;
+        const defaultTitle =
+          payload.kind === 'image'
+            ? '클립보드 이미지'
+            : payload.kind === 'file'
+            ? '클립보드 파일'
+            : '클립보드 텍스트';
         const newItem = {
           id: generateId(),
-          kind: payload.kind,
-          title: payload.title || (payload.kind === 'image' ? '클립보드 이미지' : '클립보드 텍스트'),
+          kind: payload.kind || 'text',
+          title: payload.title || defaultTitle,
           content: payload.content || '',
           imageDataUrl: payload.imageDataUrl || '',
+          fileInfo: payload.fileInfo || null,
           detectedAt: payload.detectedAt || new Date().toISOString(),
           addedAt: new Date().toISOString()
         };
@@ -413,12 +447,14 @@ export default function App() {
       if (!api || !api.readSystemClipboard) return;
       const res = await api.readSystemClipboard();
       if (!res?.ok) {
-        setClipboardStatus('클립보드를 읽는 중 오류가 발생했습니다.');
+        if (!silentIfSame) {
+          setClipboardStatus(`클립보드 확인 실패: ${res?.error || '알 수 없는 오류'}`);
+        }
         return;
       }
       if (!res.payload) {
         if (!silentIfSame) {
-          setClipboardStatus('클립보드에서 텍스트나 이미지를 찾지 못했습니다.');
+          setClipboardStatus('현재 클립보드가 비어 있거나 읽을 수 있는 항목이 없습니다.');
         }
         return;
       }
@@ -427,9 +463,16 @@ export default function App() {
       if (sig !== lastClipboardSigRef.current) {
         lastClipboardSigRef.current = sig;
         setDetectedClipboard(res.payload);
-        setClipboardStatus('새로운 클립보드 항목을 감지했습니다 ✓');
+        const kindLabel =
+          res.payload.kind === 'image'
+            ? '이미지'
+            : res.payload.kind === 'file'
+            ? '파일'
+            : '텍스트';
+        setClipboardStatus(`새로운 클립보드 ${kindLabel} 항목을 감지했습니다 ✓`);
         addToTempQueue(res.payload);
       } else if (!silentIfSame) {
+        setDetectedClipboard(res.payload);
         setClipboardStatus('현재 클립보드는 마지막으로 감지한 내용과 같습니다.');
       }
     },
@@ -438,12 +481,11 @@ export default function App() {
 
   useEffect(() => {
     if (!isMonitoring) return;
+    // 백그라운드에서도 다른 앱에서 복사(Ctrl+C)한 텍스트·이미지·파일을 실시간 감지
     captureClipboardNow(true);
     const id = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        captureClipboardNow(true);
-      }
-    }, 2200);
+      captureClipboardNow(true);
+    }, 1800);
     return () => clearInterval(id);
   }, [isMonitoring, captureClipboardNow]);
 
@@ -452,11 +494,17 @@ export default function App() {
       const next = !prev;
       setClipboardStatus(
         next
-          ? '클립보드 실시간 감지를 시작했습니다. (Ctrl+C 복사 시 자동 수집)'
+          ? '클립보드 실시간 감지를 시작했습니다. 텍스트·이미지·파일을 복사(Ctrl+C)해 보세요.'
           : '클립보드 감지가 일시정지되었습니다.'
       );
       return next;
     });
+  };
+
+  const resolveCategoryByKind = (kind) => {
+    if (kind === 'image') return '🖼️ 이미지';
+    if (kind === 'file') return '📎 파일';
+    return '🎈 개인';
   };
 
   const handleSaveDetectedToNotes = (rawTags) => {
@@ -466,18 +514,21 @@ export default function App() {
     }
     const now = new Date();
     const nowMs = now.getTime();
-    const isImg = detectedClipboard.kind === 'image';
+    const kind = detectedClipboard.kind || 'text';
     const safeHtml = escapePlainTextToHtml(detectedClipboard.content || '');
 
     const newNote = {
       id: generateId(),
-      title: detectedClipboard.title || (isImg ? '클립보드 이미지' : '클립보드 텍스트'),
+      title:
+        detectedClipboard.title ||
+        (kind === 'image' ? '클립보드 이미지' : kind === 'file' ? '클립보드 파일' : '클립보드 텍스트'),
       content: safeHtml,
-      category: isImg ? '🖼️ 이미지' : '🎈 개인',
+      category: resolveCategoryByKind(kind),
       tags: parseTagsInput(rawTags),
       pinned: false,
       copied: 0,
       imageDataUrl: detectedClipboard.imageDataUrl || '',
+      fileInfo: detectedClipboard.fileInfo || null,
       date: now.toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -490,7 +541,7 @@ export default function App() {
     };
 
     setNotes((prev) => [newNote, ...prev]);
-    showToast('감지된 클립을 노트에 저장했습니다 ✓', 'success');
+    showToast('감지된 항목을 노트에 저장했습니다 ✓', 'success');
   };
 
   const handleSaveTempItem = (tempId) => {
@@ -498,16 +549,16 @@ export default function App() {
     if (!target) return;
     const now = new Date();
     const nowMs = now.getTime();
-    const isImg = target.kind === 'image';
     const newNote = {
       id: generateId(),
       title: target.title,
       content: escapePlainTextToHtml(target.content || ''),
-      category: isImg ? '🖼️ 이미지' : '🎈 개인',
+      category: resolveCategoryByKind(target.kind),
       tags: ['클립보드'],
       pinned: false,
       copied: 0,
       imageDataUrl: target.imageDataUrl || '',
+      fileInfo: target.fileInfo || null,
       date: now.toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -536,11 +587,12 @@ export default function App() {
       id: generateId(),
       title: target.title,
       content: escapePlainTextToHtml(target.content || ''),
-      category: target.kind === 'image' ? '🖼️ 이미지' : '🎈 개인',
+      category: resolveCategoryByKind(target.kind),
       tags: ['클립보드'],
       pinned: false,
       copied: 0,
       imageDataUrl: target.imageDataUrl || '',
+      fileInfo: target.fileInfo || null,
       date: now.toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -573,7 +625,7 @@ export default function App() {
     showToast(`만료된 ${expiredCount}개 항목을 정리했습니다.`, 'info');
   };
 
-  // 5. 원클릭 클립보드 복사
+  // 5. 원클릭 클립보드 복사 및 파일 열기/폴더 보기
   const handleCopyNote = async (note, e) => {
     if (e) e.stopPropagation();
     const plain = getPlainText(note.content);
@@ -581,15 +633,16 @@ export default function App() {
 
     if (api && api.writeSystemClipboard) {
       const res = await api.writeSystemClipboard({
-        text: plain,
-        imageDataUrl: note.imageDataUrl || ''
+        text: plain || note.fileInfo?.path || '',
+        imageDataUrl: note.imageDataUrl || '',
+        filePath: note.fileInfo?.path || ''
       });
       copiedOk = Boolean(res?.ok);
     }
 
-    if (!copiedOk && plain) {
+    if (!copiedOk && (plain || note.fileInfo?.path)) {
       try {
-        await navigator.clipboard.writeText(plain);
+        await navigator.clipboard.writeText(plain || note.fileInfo?.path || '');
         copiedOk = true;
       } catch (_e) {
         copiedOk = false;
@@ -611,37 +664,165 @@ export default function App() {
     }
   };
 
+  const handleOpenFilePath = async (filePath, e) => {
+    if (e) e.stopPropagation();
+    if (!api || !api.openFile || !filePath) return;
+    const res = await api.openFile(filePath);
+    if (!res?.ok) {
+      showToast(res?.error || '파일을 열 수 없습니다.', 'error');
+    }
+  };
+
+  const handleShowFileInFolder = async (filePath, e) => {
+    if (e) e.stopPropagation();
+    if (!api || !api.showFileInFolder || !filePath) return;
+    const res = await api.showFileInFolder(filePath);
+    if (!res?.ok) {
+      showToast(res?.error || '폴더를 열 수 없습니다.', 'error');
+    }
+  };
+
   const handleTogglePin = (id, e) => {
     if (e) e.stopPropagation();
     setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, pinned: !n.pinned } : n)));
   };
 
-  // 6. 이미지 파일 선택 & 에디터 이미지 붙여넣기
+  // 6. 이미지 / 파일 첨부 및 드래그 앤 드롭 지원
+  const applyInspectedAttachment = (inspected, isEdit = false) => {
+    if (!inspected) return;
+    if (isEdit) {
+      setEditingNote((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          title: prev.title.trim() ? prev.title : inspected.fileInfo?.name || prev.title,
+          imageDataUrl: inspected.imageDataUrl || prev.imageDataUrl || '',
+          fileInfo: inspected.fileInfo || prev.fileInfo || null,
+          category:
+            prev.category === CATEGORIES[0]
+              ? inspected.isImage
+                ? '🖼️ 이미지'
+                : '📎 파일'
+              : prev.category
+        };
+      });
+    } else {
+      if (inspected.imageDataUrl) {
+        setAttachedImage(inspected.imageDataUrl);
+      }
+      if (inspected.fileInfo) {
+        setAttachedFile(inspected.fileInfo);
+      }
+      if (!title.trim() && inspected.fileInfo?.name) {
+        setTitle(inspected.fileInfo.name);
+      }
+      if (category === CATEGORIES[0]) {
+        setCategory(inspected.isImage ? '🖼️ 이미지' : '📎 파일');
+      }
+    }
+    showToast(
+      inspected.isImage ? '이미지가 첨부되었습니다 ✓' : `파일(${inspected.fileInfo?.name})이 첨부되었습니다 ✓`,
+      'info'
+    );
+  };
+
+  const handlePickNativeAttachment = async (mode = 'any', isEdit = false) => {
+    if (api && api.pickFile) {
+      const res = await api.pickFile({ mode });
+      if (!res || res.canceled) return;
+      if (!res.ok) {
+        showToast(res.error || '파일을 불러올 수 없습니다.', 'error');
+        return;
+      }
+      applyInspectedAttachment(res, isEdit);
+      return;
+    }
+    if (isEdit) {
+      editFileInputRef.current?.click();
+    } else {
+      fileInputRef.current?.click();
+    }
+  };
+
   const handleImageFileSelect = (e, isEdit = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      showToast('이미지 파일만 첨부할 수 있습니다.', 'error');
+    const droppedPath = api?.getDroppedFilePath ? api.getDroppedFilePath(file) : file.path || '';
+    if (droppedPath && api?.inspectFile) {
+      api.inspectFile(droppedPath).then((res) => {
+        if (res?.ok) applyInspectedAttachment(res, isEdit);
+      });
+      e.target.value = '';
       return;
     }
-    if (file.size > 15 * 1024 * 1024) {
-      showToast('이미지 크기는 15MB 이하여야 합니다.', 'error');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result;
-      if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
-        if (isEdit) {
-          setEditingNote((prev) => (prev ? { ...prev, imageDataUrl: dataUrl } : prev));
-        } else {
-          setAttachedImage(dataUrl);
-          if (category === CATEGORIES[0]) setCategory('🖼️ 이미지');
-        }
+
+    if (file.type.startsWith('image/')) {
+      if (file.size > 15 * 1024 * 1024) {
+        showToast('이미지 크기는 15MB 이하여야 합니다.', 'error');
+        return;
       }
-    };
-    reader.readAsDataURL(file);
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result;
+        if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+          applyInspectedAttachment(
+            {
+              isImage: true,
+              imageDataUrl: dataUrl,
+              fileInfo: {
+                name: file.name,
+                path: droppedPath || file.name,
+                size: file.size,
+                ext: '',
+                isDirectory: false
+              }
+            },
+            isEdit
+          );
+        }
+      };
+      reader.readAsDataURL(file);
+    }
     e.target.value = '';
+  };
+
+  const handleDropAttachment = async (e, isEdit = false) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    const localPath = api?.getDroppedFilePath ? api.getDroppedFilePath(file) : file.path || '';
+    if (localPath && api?.inspectFile) {
+      const res = await api.inspectFile(localPath);
+      if (res?.ok) {
+        applyInspectedAttachment(res, isEdit);
+        return;
+      }
+    }
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result;
+        if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+          applyInspectedAttachment(
+            {
+              isImage: true,
+              imageDataUrl: dataUrl,
+              fileInfo: {
+                name: file.name,
+                path: localPath || file.name,
+                size: file.size,
+                ext: '',
+                isDirectory: false
+              }
+            },
+            isEdit
+          );
+        }
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleSafePaste = (e, targetEditorRef, onUpdateContent, isEdit = false) => {
@@ -742,6 +923,7 @@ export default function App() {
     setCategory(CATEGORIES[0]);
     setTagsInput('');
     setAttachedImage('');
+    setAttachedFile(null);
     if (mainEditorRef.current) mainEditorRef.current.innerHTML = '';
     setIsInputFocused(false);
     setIsSelectOpen(false);
@@ -752,19 +934,24 @@ export default function App() {
     const rawHtmlContent = mainEditorRef.current ? mainEditorRef.current.innerHTML : content;
     const safeHtmlContent = sanitizeNoteHtml(rawHtmlContent);
     const plain = getPlainText(safeHtmlContent);
-    if (!title.trim() && !plain.trim() && !attachedImage) return;
+    if (!title.trim() && !plain.trim() && !attachedImage && !attachedFile) return;
 
     const now = new Date();
     const nowMs = now.getTime();
+    const fallbackTitle = attachedFile?.name || (attachedImage ? '이미지 노트' : plain.slice(0, 30));
+    const finalContent =
+      safeHtmlContent || (attachedFile?.path ? escapePlainTextToHtml(attachedFile.path) : '');
+
     const newNote = {
       id: generateId(),
-      title: title.trim() || (attachedImage ? '이미지 노트' : plain.slice(0, 30)),
-      content: safeHtmlContent,
+      title: title.trim() || fallbackTitle,
+      content: finalContent,
       category,
       tags: parseTagsInput(tagsInput),
       pinned: false,
       copied: 0,
       imageDataUrl: attachedImage,
+      fileInfo: attachedFile || null,
       date: now.toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -796,6 +983,7 @@ export default function App() {
       ...note,
       tags: Array.isArray(note.tags) ? note.tags : [],
       imageDataUrl: note.imageDataUrl || '',
+      fileInfo: note.fileInfo || null,
       content: normalizeContentToSafeHtml(note.content)
     };
     setEditingNote(safeCopy);
@@ -808,6 +996,7 @@ export default function App() {
       ...note,
       tags: Array.isArray(note.tags) ? note.tags : [],
       imageDataUrl: note.imageDataUrl || '',
+      fileInfo: note.fileInfo || null,
       content: normalizeContentToSafeHtml(note.content)
     });
   };
@@ -817,12 +1006,18 @@ export default function App() {
     const rawHtmlContent = editEditorRef.current ? editEditorRef.current.innerHTML : editingNote.content;
     const safeHtmlContent = sanitizeNoteHtml(rawHtmlContent);
     const plain = getPlainText(safeHtmlContent);
-    if (!editingNote.title.trim() && !plain.trim() && !editingNote.imageDataUrl) return;
+    if (
+      !editingNote.title.trim() &&
+      !plain.trim() &&
+      !editingNote.imageDataUrl &&
+      !editingNote.fileInfo
+    )
+      return;
 
     const now = new Date();
     const updatedNote = {
       ...editingNote,
-      title: editingNote.title.trim(),
+      title: editingNote.title.trim() || editingNote.fileInfo?.name || '제목 없음',
       content: safeHtmlContent,
       tags: parseTagsInput(editingTagsInput),
       date: now.toLocaleDateString('ko-KR', {
@@ -986,23 +1181,39 @@ export default function App() {
     isSelectOpen ||
     title.trim().length > 0 ||
     plainDraftContent.length > 0 ||
-    Boolean(attachedImage);
+    Boolean(attachedImage) ||
+    Boolean(attachedFile);
   const formActiveState = blurEnabled && workspace === 'composer' && hasInputFocusOrContent;
 
   const notesWithPlainCache = useMemo(() => {
-    return notes.map((note) => ({
-      ...note,
-      tags: Array.isArray(note.tags) ? note.tags : [],
-      _plainText: getPlainText(note.content),
-      _safeHtml: normalizeContentToSafeHtml(note.content)
-    }));
+    return notes.map((note) => {
+      const plainText = getPlainText(note.content);
+      const enriched = {
+        ...note,
+        tags: Array.isArray(note.tags) ? note.tags : [],
+        _plainText: plainText,
+        _safeHtml: normalizeContentToSafeHtml(note.content)
+      };
+      enriched._contentType = getNoteContentType(enriched);
+      return enriched;
+    });
   }, [notes]);
+
+  const contentTypeCounts = useMemo(() => {
+    const counts = { all: notesWithPlainCache.length, text: 0, image: 0, file: 0, link: 0 };
+    for (const n of notesWithPlainCache) {
+      const t = n._contentType || 'text';
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    return counts;
+  }, [notesWithPlainCache]);
 
   const filteredAndSortedNotes = useMemo(() => {
     const sl = searchQuery.trim().toLowerCase();
     return notesWithPlainCache
       .filter((note) => {
         if (pinnedOnly && !note.pinned) return false;
+        if (contentTypeTab !== 'all' && note._contentType !== contentTypeTab) return false;
         const mc =
           filterCategory === FILTER_CATEGORIES[0] || note.category === filterCategory;
         if (!mc) return false;
@@ -1011,7 +1222,8 @@ export default function App() {
         const t = (note.title || '').toLowerCase();
         const c = (note._plainText || '').toLowerCase();
         const tg = (note.tags || []).join(' ').toLowerCase();
-        return t.includes(sl) || c.includes(sl) || tg.includes(sl);
+        const fp = (note.fileInfo?.name || note.fileInfo?.path || '').toLowerCase();
+        return t.includes(sl) || c.includes(sl) || tg.includes(sl) || fp.includes(sl);
       })
       .sort((a, b) => {
         if (Boolean(b.pinned) !== Boolean(a.pinned)) {
@@ -1019,7 +1231,7 @@ export default function App() {
         }
         return sortOrder === '최신순' ? b.timestamp - a.timestamp : a.timestamp - b.timestamp;
       });
-  }, [notesWithPlainCache, searchQuery, filterCategory, pinnedOnly, sortOrder]);
+  }, [notesWithPlainCache, searchQuery, filterCategory, contentTypeTab, pinnedOnly, sortOrder]);
 
   return (
     <>
@@ -1510,14 +1722,26 @@ export default function App() {
 
           {/* ================= 1) Warm Minimalism 솔리드 노트 에디터 OR 2) 클립보드 감지 패널 ================= */}
           {workspace === 'composer' ? (
-            <section className="bg-surface-light dark:bg-surface-dark p-5 sm:p-6 rounded-[20px] shadow-sm border border-line-light dark:border-line-dark transition-colors focus-within:border-blue-600/60">
+            <section
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDraggingOver(true);
+              }}
+              onDragLeave={() => setIsDraggingOver(false)}
+              onDrop={(e) => handleDropAttachment(e, false)}
+              className={`bg-surface-light dark:bg-surface-dark p-5 sm:p-6 rounded-[20px] shadow-sm border transition-colors focus-within:border-blue-600/60 ${
+                isDraggingOver
+                  ? 'border-blue-600 ring-2 ring-blue-600/20'
+                  : 'border-line-light dark:border-line-dark'
+              }`}
+            >
               <form
                 onSubmit={handleAddNote}
                 className={`flex flex-col gap-3 ${
                   isFocusMode ? 'max-w-[720px] mx-auto w-full py-2' : ''
                 }`}
               >
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center justify-between gap-2.5 flex-wrap sm:flex-nowrap">
                   <input
                     type="text"
                     placeholder="제목 또는 클립 용도를 입력하세요..."
@@ -1530,19 +1754,29 @@ export default function App() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/*"
                     onChange={(e) => handleImageFileSelect(e, false)}
                     className="hidden"
                   />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200/70 dark:hover:bg-white/10 border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors"
-                    title="이미지 파일 첨부"
-                  >
-                    <IconImage />
-                    <span>이미지</span>
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handlePickNativeAttachment('image', false)}
+                      className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200/70 dark:hover:bg-white/10 border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      title="이미지 파일 추가"
+                    >
+                      <IconImage />
+                      <span>이미지 추가</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePickNativeAttachment('any', false)}
+                      className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200/70 dark:hover:bg-white/10 border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      title="문서, 압축파일, 실행파일 등 일반 파일 첨부"
+                    >
+                      <IconPaperclip />
+                      <span>파일 첨부</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* 슬림 1줄 서식 툴바 */}
@@ -1553,7 +1787,7 @@ export default function App() {
                   ref={mainEditorRef}
                   contentEditable
                   suppressContentEditableWarning
-                  data-placeholder="내용을 작성하거나 텍스트/이미지를 붙여넣으세요 (Ctrl+V)..."
+                  data-placeholder="내용을 작성하거나 텍스트·이미지를 붙여넣으세요 (Ctrl+V). 이미지나 파일을 이 영역에 끌어다 놓아도 첨부됩니다."
                   className={`w-full bg-transparent text-zinc-800 dark:text-gray-100 text-base px-1.5 transition-all ${
                     isFocusMode ? 'min-h-[48vh]' : 'min-h-[104px]'
                   }`}
@@ -1563,21 +1797,77 @@ export default function App() {
                   onBlur={() => setIsInputFocused(false)}
                 />
 
-                {attachedImage && (
-                  <div className="relative self-start mt-1 p-2 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark">
-                    <img
-                      src={attachedImage}
-                      alt="첨부 이미지"
-                      className="max-h-40 rounded-lg object-contain"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setAttachedImage('')}
-                      className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-bold grid place-items-center shadow"
-                      title="첨부 이미지 제거"
-                    >
-                      ✕
-                    </button>
+                {/* 전용 이미지 / 파일 첨부 칸 */}
+                {(attachedImage || attachedFile) && (
+                  <div className="p-3.5 rounded-2xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                        첨부된 이미지 / 파일
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAttachedImage('');
+                          setAttachedFile(null);
+                        }}
+                        className="text-[11px] font-semibold text-red-500 hover:underline"
+                      >
+                        전체 첨부 해제
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-start gap-3">
+                      {attachedImage && (
+                        <div className="relative p-2 rounded-xl bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark">
+                          <img
+                            src={attachedImage}
+                            alt="첨부 이미지"
+                            className="max-h-36 rounded-lg object-contain"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setAttachedImage('')}
+                            className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-bold grid place-items-center shadow"
+                            title="첨부 이미지 제거"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+
+                      {attachedFile && (
+                        <div className="relative flex-1 min-w-[240px] p-3 rounded-xl bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-9 h-9 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 grid place-items-center shrink-0">
+                              <IconFile />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-zinc-900 dark:text-gray-100 truncate">
+                                  {attachedFile.name}
+                                </span>
+                                {attachedFile.size > 0 && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-500 shrink-0">
+                                    {formatFileSize(attachedFile.size)}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                                {attachedFile.path}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setAttachedFile(null)}
+                            className="w-6 h-6 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-muted-light dark:hover:bg-muted-dark grid place-items-center shrink-0"
+                            title="첨부 파일 제거"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -1643,7 +1933,48 @@ export default function App() {
               onSaveAllTemp={handleSaveAllTemp}
               onDeleteTempItem={handleDeleteTempItem}
               onClearExpiredTemp={handleClearExpiredTemp}
+              onOpenFilePath={handleOpenFilePath}
+              onShowFileInFolder={handleShowFileInFolder}
             />
+          )}
+
+          {/* ================= 유형별 모아보기 칸 (전체 / 텍스트 / 이미지 / 파일 / 링크) ================= */}
+          {!(isFocusMode && workspace === 'composer') && (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {CONTENT_TYPE_TABS.map((tab) => {
+                  const active = contentTypeTab === tab.id;
+                  const count = contentTypeCounts[tab.id] || 0;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setContentTypeTab(tab.id)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border transition-colors ${
+                        active
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-surface-light dark:bg-surface-dark text-zinc-700 dark:text-zinc-300 border-line-light dark:border-line-dark hover:bg-muted-light dark:hover:bg-muted-dark'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      <span
+                        className={`text-[11px] px-1.5 py-0.2 rounded-md font-extrabold ${
+                          active
+                            ? 'bg-white/20 text-white'
+                            : 'bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <span className="text-xs text-zinc-500 dark:text-zinc-400 font-medium px-1">
+                표시 중 {filteredAndSortedNotes.length}개
+              </span>
+            </div>
           )}
 
           {/* ================= Bento UI 노트 & 클립 카드 그리드 ================= */}
@@ -1662,7 +1993,7 @@ export default function App() {
                   표시할 노트나 클립이 없습니다.
                 </p>
                 <p className="text-xs mt-1 text-zinc-400">
-                  위 입력창에서 새 노트를 작성하거나 클립보드 자동 감지를 시작해 보세요.
+                  위 입력창에서 새 노트를 작성하거나 이미지·파일을 첨부, 또는 클립보드 자동 감지를 시작해 보세요.
                 </p>
               </div>
             ) : (
@@ -1688,10 +2019,15 @@ export default function App() {
                       {/* 카드 헤더: 절제된 톤온톤 카테고리 배지 + 제목 + 고정 핀 */}
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex flex-col gap-1.5 min-w-0">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 text-[11px] font-semibold border border-line-light dark:border-line-dark">
                               {note.category || CATEGORIES[0]}
                             </span>
+                            {note.fileInfo?.path && (
+                              <span className="px-2 py-0.5 rounded-md bg-blue-600/10 text-blue-600 dark:text-blue-400 text-[10px] font-bold">
+                                📎 파일
+                              </span>
+                            )}
                             {note.pinned && (
                               <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
                                 📌 고정됨
@@ -1725,6 +2061,49 @@ export default function App() {
                             alt="클립 이미지"
                             className="max-h-full max-w-full object-contain"
                           />
+                        </div>
+                      )}
+
+                      {/* 첨부 파일 전용 칸 */}
+                      {note.fileInfo?.path && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark mb-2.5 flex items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-7 h-7 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 grid place-items-center shrink-0">
+                              <IconFile />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-xs font-bold text-zinc-800 dark:text-gray-100 truncate">
+                                {note.fileInfo.name}
+                              </span>
+                              <span className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
+                                {note.fileInfo.size > 0
+                                  ? `${formatFileSize(note.fileInfo.size)} · `
+                                  : ''}
+                                {note.fileInfo.path}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenFilePath(note.fileInfo.path, e)}
+                              className="px-2 py-1 rounded-md bg-surface-light dark:bg-surface-dark hover:bg-blue-600 hover:text-white text-zinc-700 dark:text-zinc-200 text-[11px] font-bold border border-line-light dark:border-line-dark transition-colors"
+                              title="파일 실행/열기"
+                            >
+                              열기
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleShowFileInFolder(note.fileInfo.path, e)}
+                              className="p-1 rounded-md bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark text-zinc-600 dark:text-zinc-300 border border-line-light dark:border-line-dark transition-colors"
+                              title="폴더에서 보기"
+                            >
+                              <IconFolder />
+                            </button>
+                          </div>
                         </div>
                       )}
 
@@ -1850,6 +2229,48 @@ export default function App() {
                   />
                 )}
 
+                {viewingNote.fileInfo?.path && (
+                  <div className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 grid place-items-center shrink-0">
+                        <IconFile />
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-zinc-900 dark:text-white truncate">
+                            {viewingNote.fileInfo.name}
+                          </span>
+                          {viewingNote.fileInfo.size > 0 && (
+                            <span className="text-xs px-2 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-500 font-semibold shrink-0">
+                              {formatFileSize(viewingNote.fileInfo.size)}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                          {viewingNote.fileInfo.path}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenFilePath(viewingNote.fileInfo.path, e)}
+                        className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold transition-colors"
+                      >
+                        파일 열기
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => handleShowFileInFolder(viewingNote.fileInfo.path, e)}
+                        className="px-3 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark text-zinc-700 dark:text-zinc-200 text-xs font-semibold border border-line-light dark:border-line-dark transition-colors flex items-center gap-1"
+                      >
+                        <IconFolder />
+                        <span>폴더 열기</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div
                   className="text-zinc-800 dark:text-gray-100 text-base leading-[1.75] whitespace-pre-wrap break-words pt-1"
                   dangerouslySetInnerHTML={{ __html: sanitizeNoteHtml(viewingNote.content) }}
@@ -1890,6 +2311,8 @@ export default function App() {
           onClick={requestCloseEditModal}
         >
           <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => handleDropAttachment(e, true)}
             className="bg-surface-light dark:bg-surface-dark w-full max-w-3xl max-h-[90vh] rounded-[20px] shadow-2xl flex flex-col overflow-hidden animate-modal border border-line-light dark:border-line-dark"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1919,17 +2342,24 @@ export default function App() {
                   <input
                     ref={editFileInputRef}
                     type="file"
-                    accept="image/*"
                     onChange={(e) => handleImageFileSelect(e, true)}
                     className="hidden"
                   />
                   <button
                     type="button"
-                    onClick={() => editFileInputRef.current?.click()}
-                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-semibold flex items-center gap-1.5"
+                    onClick={() => handlePickNativeAttachment('image', true)}
+                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-semibold flex items-center gap-1.5 hover:bg-zinc-200/70 dark:hover:bg-white/10"
                   >
                     <IconImage />
-                    <span>이미지 변경/추가</span>
+                    <span>이미지 추가/변경</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePickNativeAttachment('any', true)}
+                    className="px-3 py-1.5 rounded-xl bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-semibold flex items-center gap-1.5 hover:bg-zinc-200/70 dark:hover:bg-white/10"
+                  >
+                    <IconPaperclip />
+                    <span>파일 첨부/변경</span>
                   </button>
                 </div>
               </div>
@@ -1968,6 +2398,31 @@ export default function App() {
                     className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-bold grid place-items-center"
                   >
                     ✕
+                  </button>
+                </div>
+              )}
+
+              {editingNote.fileInfo && (
+                <div className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 grid place-items-center shrink-0">
+                      <IconFile />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-bold text-zinc-900 dark:text-white truncate">
+                        {editingNote.fileInfo.name}
+                      </span>
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                        {editingNote.fileInfo.path}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingNote((prev) => ({ ...prev, fileInfo: null }))}
+                    className="px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-red-600 hover:text-white text-zinc-500 text-xs font-bold transition-colors shrink-0"
+                  >
+                    첨부 제거
                   </button>
                 </div>
               )}

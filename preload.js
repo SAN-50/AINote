@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('treeNoteAPI', {
   loadData: () => ipcRenderer.invoke('notes:load'),
@@ -7,6 +7,20 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   importNotes: () => ipcRenderer.invoke('notes:import'),
   readSystemClipboard: () => ipcRenderer.invoke('clipboard:read'),
   writeSystemClipboard: (payload) => ipcRenderer.invoke('clipboard:write', payload),
+  pickFile: (options) => ipcRenderer.invoke('file:pick', options),
+  inspectFile: (filePath) => ipcRenderer.invoke('file:inspect', filePath),
+  openFile: (filePath) => ipcRenderer.invoke('file:open', filePath),
+  showFileInFolder: (filePath) => ipcRenderer.invoke('file:show-in-folder', filePath),
+  getDroppedFilePath: (file) => {
+    try {
+      if (webUtils && typeof webUtils.getPathForFile === 'function') {
+        return webUtils.getPathForFile(file) || '';
+      }
+      return file?.path || '';
+    } catch (_e) {
+      return '';
+    }
+  },
   setPassword: (payload) => ipcRenderer.invoke('lock:set-password', payload),
   verifyPassword: (password) => ipcRenderer.invoke('lock:verify-password', password),
   removePassword: (currentPassword) => ipcRenderer.invoke('lock:remove-password', currentPassword),

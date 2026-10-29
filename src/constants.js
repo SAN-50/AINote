@@ -6,11 +6,20 @@ export const CATEGORIES = [
   '🔗 링크',
   '📋 템플릿',
   '🖼️ 이미지',
+  '📎 파일',
   '💡 아이디어',
   '✅ 할일'
 ];
 
 export const FILTER_CATEGORIES = ['🌐 전체', ...CATEGORIES];
+
+export const CONTENT_TYPE_TABS = [
+  { id: 'all', label: '전체' },
+  { id: 'text', label: '📝 텍스트' },
+  { id: 'image', label: '🖼️ 이미지' },
+  { id: 'file', label: '📎 파일' },
+  { id: 'link', label: '🔗 링크' }
+];
 
 export const FONTS = [
   { id: 'sans', name: '기본 고딕', css: '"Malgun Gothic", "Apple SD Gothic Neo", "Segoe UI", sans-serif' },
