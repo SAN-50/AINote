@@ -1,7 +1,7 @@
 {
   "name": "ainote",
   "productName": "나무 노트",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "스마트 노트 & 클립보드 매니저 (나무 노트)",
   "main": "main.js",
   "author": "Mokdua",
