@@ -10,10 +10,39 @@ const { URL } = require('url');
 const DISCOVERY_PORT = 49872;
 const LOCAL_PORT_CANDIDATES = [49873, 49874, 49875, 49876, 49877];
 const MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024; // 8MB max per packet
+const MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024; // 1MB max for OAuth token response
+const MAX_SSE_CLIENTS = 30;
 const MAX_CHAT_MESSAGES = 300;
 const MAX_SHARED_NOTES = 500;
 const MAX_JOIN_ATTEMPTS = 5;
 const JOIN_LOCKOUT_MS = 30 * 1000;
+const BLOCKED_INVITE_PORTS = new Set([3306, 5432, 6379, 27017, 9200, 11211]);
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isSafeInviteTarget(host, port) {
+  if (!host || typeof host !== 'string') return false;
+  const cleanHost = host.trim().toLowerCase();
+  if (!/^[a-z0-9.-]+$/.test(cleanHost)) return false;
+  if (
+    cleanHost === '0.0.0.0' ||
+    cleanHost.startsWith('169.254.') ||
+    cleanHost === 'metadata' ||
+    cleanHost === 'metadata.google.internal'
+  ) {
+    return false;
+  }
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) return false;
+  if (BLOCKED_INVITE_PORTS.has(port)) return false;
+  return true;
+}
 
 const DEFAULT_SECTIONS = [
   { id: 'notice', title: '📌 공지 / 필독', color: 'blue' },
@@ -136,21 +165,17 @@ function decodeInviteCode(code) {
     if (!raw) return null;
     if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(raw) || /^localhost:\d{2,5}$/i.test(raw)) {
       const [h, p] = raw.split(':');
+      const host = h.toLowerCase() === 'localhost' ? '127.0.0.1' : h;
       const portNum = Number(p);
-      if (portNum >= 1024 && portNum <= 65535) {
-        return { host: h === 'localhost' ? '127.0.0.1' : h, port: portNum };
+      if (isSafeInviteTarget(host, portNum)) {
+        return { host, port: portNum };
       }
+      return null;
     }
     const decoded = Buffer.from(raw, 'base64url').toString('utf8');
     const [host, portStr] = decoded.split(':');
     const port = Number(portStr);
-    if (
-      host &&
-      /^[a-zA-Z0-9.-]+$/.test(host) &&
-      Number.isInteger(port) &&
-      port >= 1024 &&
-      port <= 65535
-    ) {
+    if (isSafeInviteTarget(host, port)) {
       return { host, port };
     }
     return null;
@@ -559,16 +584,30 @@ class SharedRoomManager {
         'https://oauth2.googleapis.com/token',
         {
           method: 'POST',
+          timeout: 10000,
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Content-Length': Buffer.byteLength(postData)
           }
         },
         (res) => {
-          let body = '';
-          res.on('data', (chunk) => (body += chunk));
+          const chunks = [];
+          let totalBytes = 0;
+          let oversized = false;
+          res.on('data', (chunk) => {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_OAUTH_RESPONSE_BYTES) {
+              oversized = true;
+              req.destroy();
+              resolve({ ok: false, error: 'Google 인증 응답 크기가 허용 한도를 초과했습니다.' });
+              return;
+            }
+            chunks.push(chunk);
+          });
           res.on('end', () => {
+            if (oversized) return;
             try {
+              const body = Buffer.concat(chunks).toString('utf8');
               const parsed = JSON.parse(body);
               if (!parsed.id_token && !parsed.access_token) {
                 resolve({
@@ -577,12 +616,31 @@ class SharedRoomManager {
                 });
                 return;
               }
-              // Parse ID token JWT payload safely
+              // Parse & validate ID token JWT claims
               if (parsed.id_token) {
                 const parts = parsed.id_token.split('.');
                 if (parts.length === 3) {
                   const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+                  const validIssuer =
+                    claims.iss === 'https://accounts.google.com' ||
+                    claims.iss === 'accounts.google.com';
+                  const validAudience = claims.aud === clientId;
+                  const validExp =
+                    typeof claims.exp === 'number' && claims.exp * 1000 > Date.now();
+
+                  if (!validIssuer || !validAudience || !validExp) {
+                    resolve({
+                      ok: false,
+                      error: 'Google ID 토큰 클레임 검증에 실패했습니다. (발급자/대상/만료 확인)'
+                    });
+                    return;
+                  }
+
                   const email = String(claims.email || '').toLowerCase();
+                  if (!email) {
+                    resolve({ ok: false, error: 'Google 계정 이메일 정보를 확인할 수 없습니다.' });
+                    return;
+                  }
                   const uid = `google:${claims.sub || email}`;
                   const profile = sanitizeAuthor({
                     uid,
@@ -602,6 +660,10 @@ class SharedRoomManager {
           });
         }
       );
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ ok: false, error: 'Google 인증 서버 응답 시간이 초과되었습니다.' });
+      });
       req.on('error', (err) => resolve({ ok: false, error: err.message }));
       req.write(postData);
       req.end();
@@ -641,11 +703,8 @@ class SharedRoomManager {
 
     let room;
     if (existingRoom) {
-      // Verify if reopening an existing hosted room: allow if same owner or matching password
-      if (
-        existingRoom.hostProfile?.uid !== account.uid &&
-        !safeTimingEqualHex(existingRoom.authToken, authToken)
-      ) {
+      // 기존 동명의 방을 다시 열 때는 항상 기존 비밀번호 일치 여부를 상수 시간으로 검증
+      if (!safeTimingEqualHex(existingRoom.authToken, authToken)) {
         return {
           ok: false,
           error: '기존에 생성된 동명의 방 비밀번호가 일치하지 않습니다.'
@@ -969,8 +1028,16 @@ class SharedRoomManager {
 
     // 2) GET /api/events (SSE Real-Time Encrypted Stream)
     if (req.method === 'GET' && reqUrl.pathname === '/api/events') {
+      const rate = this.checkJoinRateLimit(remoteIp);
+      if (!rate.allowed) {
+        res.writeHead(429);
+        res.end();
+        return;
+      }
+
       const authHeader = req.headers['x-treenote-auth'] || '';
       if (!safeTimingEqualHex(authHeader, room.authToken)) {
+        this.recordJoinAttempt(remoteIp, false);
         res.writeHead(403);
         res.end();
         return;
@@ -981,6 +1048,7 @@ class SharedRoomManager {
         const profileEnv = JSON.parse(req.headers['x-treenote-profile'] || '{}');
         guestProfile = sanitizeAuthor(decryptPayload(profileEnv, cipherKey));
       } catch (_e) {
+        this.recordJoinAttempt(remoteIp, false);
         res.writeHead(400);
         res.end();
         return;
@@ -991,6 +1059,14 @@ class SharedRoomManager {
         res.end();
         return;
       }
+
+      if (!this.sseClients.has(guestProfile.uid) && this.sseClients.size >= MAX_SSE_CLIENTS) {
+        res.writeHead(503);
+        res.end();
+        return;
+      }
+
+      this.recordJoinAttempt(remoteIp, true);
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -1015,10 +1091,18 @@ class SharedRoomManager {
 
     // 3) POST /api/action (Guest performs note/chat/folder/section action)
     if (req.method === 'POST' && reqUrl.pathname === '/api/action') {
+      const rate = this.checkJoinRateLimit(remoteIp);
+      if (!rate.allowed) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: rate.error }));
+        return;
+      }
+
       const authHeader = req.headers['x-treenote-auth'] || '';
       if (!safeTimingEqualHex(authHeader, room.authToken)) {
+        this.recordJoinAttempt(remoteIp, false);
         res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: ' 인증 실패' }));
+        res.end(JSON.stringify({ ok: false, error: '인증 실패' }));
         return;
       }
 
@@ -1026,6 +1110,7 @@ class SharedRoomManager {
         const body = await this.readJsonBody(req);
         const actionPayload = decryptPayload(body.envelope, cipherKey);
         const actor = sanitizeAuthor(actionPayload.actor);
+        this.recordJoinAttempt(remoteIp, true);
 
         if ((room.kickedUids || []).includes(actor.uid)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1037,6 +1122,7 @@ class SharedRoomManager {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
+        this.recordJoinAttempt(remoteIp, false);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));
       }
@@ -1306,10 +1392,23 @@ class SharedRoomManager {
           }
         },
         (res) => {
-          let raw = '';
-          res.on('data', (chunk) => (raw += chunk));
+          let totalBytes = 0;
+          const chunks = [];
+          let aborted = false;
+          res.on('data', (chunk) => {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_HTTP_BODY_BYTES) {
+              aborted = true;
+              req.destroy();
+              reject(new Error('응답 데이터 크기가 허용 한도(8MB)를 초과했습니다.'));
+              return;
+            }
+            chunks.push(chunk);
+          });
           res.on('end', () => {
+            if (aborted) return;
             try {
+              const raw = Buffer.concat(chunks).toString('utf8');
               resolve(raw ? JSON.parse(raw) : {});
             } catch (e) {
               reject(e);
@@ -1359,6 +1458,14 @@ class SharedRoomManager {
 
         let buffer = '';
         res.on('data', (chunk) => {
+          if (Buffer.byteLength(buffer, 'utf8') + chunk.length > MAX_HTTP_BODY_BYTES) {
+            req.destroy();
+            this.leaveCurrentRoom();
+            this.sendToRenderer('shared:room-disconnected', {
+              reason: '호스트로부터 허용 한도를 초과한 데이터가 수신되어 연결을 차단했습니다.'
+            });
+            return;
+          }
           buffer += chunk.toString('utf8');
           const parts = buffer.split('\n\n');
           buffer = parts.pop() || '';
@@ -1455,6 +1562,17 @@ class SharedRoomManager {
         const idx = (room.notes || []).findIndex((n) => n.id === targetId);
         if (idx === -1) return { ok: false, error: '대상 노트를 찾을 수 없습니다.' };
         const existing = room.notes[idx];
+        if (
+          perm === 'host-delete' &&
+          !isOwner &&
+          existing.author?.uid !== actor.uid &&
+          (existing.sectionId === 'notice' || existing.pinned)
+        ) {
+          return {
+            ok: false,
+            error: '공지 또는 상단 고정된 노트는 호스트 또는 작성자만 수정할 수 있습니다.'
+          };
+        }
         const updated = sanitizeSharedNote(
           {
             ...existing,
@@ -1535,9 +1653,9 @@ class SharedRoomManager {
 
         const mergedHtmlParts = selected.map(
           (n, i) =>
-            `<div><b>${i + 1}. ${n.title}</b> <span style="font-size:12px;">(작성: ${
+            `<div><b>${i + 1}. ${escapeHtml(n.title)}</b> <span style="font-size:12px;">(작성: ${escapeHtml(
               n.author?.name || '멤버'
-            })</span></div><div>${n.content || ''}</div><div><br></div>`
+            )})</span></div><div>${n.content || ''}</div><div><br></div>`
         );
         const mergedChecklist = selected.flatMap((n) => n.checklist || []).slice(0, 60);
         const mergedTags = Array.from(
@@ -1566,7 +1684,13 @@ class SharedRoomManager {
 
         const removeOriginal = Boolean(action.removeOriginal);
         const remaining = removeOriginal
-          ? (room.notes || []).filter((n) => !ids.includes(n.id))
+          ? (room.notes || []).filter((n) => {
+              if (!ids.includes(n.id)) return true;
+              if (perm === 'host-delete' && !isOwner && n.author?.uid !== actor.uid) {
+                return true;
+              }
+              return false;
+            })
           : room.notes || [];
         room.notes = [mergedNote, ...remaining].slice(0, MAX_SHARED_NOTES);
         room.updatedAt = Date.now();

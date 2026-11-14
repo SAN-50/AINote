@@ -19,6 +19,16 @@
   - 우측 도킹형 실시간 그룹 채팅창에서 텍스트 대화, `Ctrl+V` 클립보드 이미지 전송, `@공유 노트 바로가기 카드` 전송 지원.
   - 중요한 채팅 메시지 옆의 **[📌 노트로 박제]** 버튼 클릭 시 즉시 해당 대화를 공유 노트로 등록.
 
+### Security (공유 스페이스 보안 감사 및 강화)
+- **호스트 방 재오픈 비밀번호 강제 검증 (`hostRoom`)**:
+  - 기존 방을 다시 열 때 계정 프로필 우회를 막고 항상 `safeTimingEqualHex`로 방 비밀번호 일치 여부를 검증하도록 강화.
+- **전 엔드포인트 Rate Limit & SSE 동시 접속 제한 (`handleHostHttpRequest`)**:
+  - `/api/join`뿐 아니라 `/api/events`, `/api/action` 엔드포인트 최상단에도 비밀번호 오류 누적 차단(Rate Limit) 및 실패 카운트를 적용하고 SSE 최대 동시 연결 수(30개)를 제한.
+- **권한 우회 차단 및 병합 XSS 방지 (`UPDATE_NOTE`, `MERGE_NOTES`, `escapeHtml`)**:
+  - `host-delete` 모드에서 타인이 작성한 공지/고정 노트 수정 및 병합(`removeOriginal`)을 통한 원본 삭제 우회를 차단하고, 병합 HTML 생성 시 제목·작성자명을 이스케이프 처리.
+- **초대 코드 SSRF 방어, 패킷 크기 제한 및 Google ID 토큰 클레임 검증**:
+  - 메타데이터 IP(`169.254.x.x`), `0.0.0.0`, DB 포트 연결을 차단(`isSafeInviteTarget`)하고, 게스트 HTTP/SSE 수신 버퍼 한도(8MB)와 OAuth 2.0 ID 토큰 `iss`/`aud`/`exp` 클레임 검증 및 1MB/10초 제한을 적용.
+
 ## [1.3.0] - 2026-10-29
 
 ### Fixed (클립보드 자동 감지 오류 수정)
