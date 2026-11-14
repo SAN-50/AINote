@@ -106,7 +106,8 @@ export default function App() {
   const [corruptWarning, setCorruptWarning] = useState(null);
   const [statusBanner, setStatusBanner] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
-  const [appVersion, setAppVersion] = useState('1.3.0');
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [appVersion, setAppVersion] = useState('1.4.2');
 
   // Settings & Password Lock State
   const [isDark, setIsDark] = useState(true);
@@ -299,14 +300,24 @@ export default function App() {
 
     initData();
 
-    if (api && api.onUpdateStatus) {
-      const unsubscribe = api.onUpdateStatus((status) => {
-        setUpdateInfo(status);
-      });
-      return () => {
-        mounted = false;
-        unsubscribe();
-      };
+    if (api) {
+      if (api.getUpdateStatus) {
+        api.getUpdateStatus().then((st) => {
+          if (mounted && st) setUpdateInfo(st);
+        }).catch(() => {});
+      }
+      if (api.onUpdateStatus) {
+        const unsubscribe = api.onUpdateStatus((status) => {
+          setUpdateInfo(status);
+          if (status?.state === 'available' || status?.state === 'downloaded') {
+            setUpdateDismissed(false);
+          }
+        });
+        return () => {
+          mounted = false;
+          unsubscribe();
+        };
+      }
     }
 
     return () => {
@@ -1150,6 +1161,7 @@ export default function App() {
 
   const handleManualUpdateCheck = async () => {
     if (!api) return;
+    setUpdateDismissed(false);
     const res = await api.checkForUpdates();
     if (res && res.message) {
       showToast(res.message, res.ok ? 'info' : 'error');
@@ -1426,13 +1438,17 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleManualUpdateCheck}
-                      disabled={updateInfo?.state === 'checking' || updateInfo?.state === 'available'}
+                      disabled={
+                        updateInfo?.state === 'checking' ||
+                        updateInfo?.state === 'available' ||
+                        updateInfo?.state === 'downloading'
+                      }
                       className="py-2 px-3.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600 hover:text-white disabled:opacity-50 text-zinc-700 dark:text-zinc-200 text-xs font-bold border border-line-light dark:border-line-dark transition-colors shrink-0"
                     >
                       {updateInfo?.state === 'checking'
                         ? '확인 중...'
-                        : updateInfo?.state === 'available'
-                        ? '다운로드 중...'
+                        : updateInfo?.state === 'available' || updateInfo?.state === 'downloading'
+                        ? `다운로드 중 (${updateInfo?.progress || 0}%)`
                         : '업데이트 확인'}
                     </button>
                   )}
@@ -1679,20 +1695,64 @@ export default function App() {
             </div>
           )}
 
-          {updateInfo && (updateInfo.state === 'available' || updateInfo.state === 'downloaded') && (
-            <div className="p-3.5 rounded-xl bg-blue-600/10 border border-blue-600/30 text-blue-600 dark:text-blue-300 text-xs font-bold flex justify-between items-center gap-3">
-              <span>🔄 {updateInfo.message}</span>
-              {updateInfo.state === 'downloaded' && (
-                <button
-                  type="button"
-                  onClick={() => api?.installUpdate()}
-                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shrink-0 shadow-sm"
-                >
-                  지금 재시작하여 업데이트
-                </button>
-              )}
-            </div>
-          )}
+          {updateInfo &&
+            ['available', 'downloading', 'downloaded'].includes(updateInfo.state) &&
+            !updateDismissed && (
+              <section className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/35 text-zinc-900 dark:text-zinc-100 shadow-sm flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-extrabold shrink-0">
+                      NEW {updateInfo.version ? `v${updateInfo.version}` : 'UPDATE'}
+                    </span>
+                    <span className="text-xs sm:text-sm font-bold text-blue-700 dark:text-blue-300 truncate">
+                      🚀 {updateInfo.message}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {updateInfo.state === 'downloaded' ? (
+                      <button
+                        type="button"
+                        onClick={() => api?.installUpdate()}
+                        className="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold shadow-sm transition-colors"
+                      >
+                        ⚡ 지금 업데이트 적용
+                      </button>
+                    ) : (
+                      <span className="px-3 py-1.5 rounded-xl bg-blue-600/15 text-blue-700 dark:text-blue-300 text-xs font-bold">
+                        다운로드 {typeof updateInfo.progress === 'number' ? `${updateInfo.progress}%` : '중...'}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setUpdateDismissed(true)}
+                      className="px-2.5 py-1.5 rounded-xl text-xs font-semibold text-zinc-500 hover:bg-black/5 dark:hover:bg-white/10"
+                    >
+                      나중에
+                    </button>
+                  </div>
+                </div>
+
+                {(updateInfo.state === 'available' || updateInfo.state === 'downloading') && (
+                  <div className="w-full h-1.5 rounded-full bg-blue-950/15 dark:bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full bg-blue-600 transition-all duration-300"
+                      style={{ width: `${Math.max(6, updateInfo.progress || 0)}%` }}
+                    />
+                  </div>
+                )}
+
+                {updateInfo.releaseNotes && (
+                  <div className="p-3 rounded-xl bg-surface-light/90 dark:bg-surface-dark/90 border border-line-light dark:border-line-dark max-h-40 overflow-y-auto">
+                    <div className="text-[11px] font-extrabold text-zinc-500 dark:text-zinc-400 mb-1">
+                      📋 이번 업데이트 변경 내역
+                    </div>
+                    <pre className="text-xs text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap break-words font-sans leading-relaxed">
+                      {updateInfo.releaseNotes}
+                    </pre>
+                  </div>
+                )}
+              </section>
+            )}
 
           {workspace === 'shared' ? (
             <SharedSpacePanel

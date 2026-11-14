@@ -58,7 +58,59 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and Publish Installer to GitHub Releases
+      - name: Build Installer
+        run: npm run dist
+
+      - name: Extract Latest Release Notes from CHANGELOG.md
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const ver = require("./package.json").version;
+            let notes = "나무 노트 v" + ver + " 업데이트입니다.";
+            if (fs.existsSync("CHANGELOG.md")) {
+              const md = fs.readFileSync("CHANGELOG.md", "utf8");
+              const m = md.match(/##\s+\[[^\]]+\][^\r\n]*[\r\n]+([\s\S]*?)(?=\r?\n##\s+\[|$)/);
+              if (m && m[1].trim()) notes = m[1].trim();
+            }
+            fs.mkdirSync("dist", { recursive: true });
+            fs.writeFileSync("dist/release-notes.md", notes, "utf8");
+          '
+
+      - name: Publish Installer to GitHub Releases
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run release
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          EXE_FILE="dist/TreeNote_Setup_${VER}.exe"
+          BLOCKMAP_FILE="dist/TreeNote_Setup_${VER}.exe.blockmap"
+          YML_FILE="dist/latest.yml"
+
+          if [ ! -f "$EXE_FILE" ] || [ ! -f "$YML_FILE" ]; then
+            echo "Required build artifacts missing in dist/:"
+            ls -la dist/
+            exit 1
+          fi
+
+          # 불완전하게 올라간 기존 릴리스(latest.yml 또는 .exe 누락) 정리
+          for tag in $(gh release list --limit 20 --json tagName -q '.[].tagName'); do
+            ASSETS=$(gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null || echo "")
+            if ! echo "$ASSETS" | grep -q "latest.yml" && ! echo "$ASSETS" | grep -q "\.exe$"; then
+              echo "Cleaning up incomplete release $tag..."
+              gh release delete "$tag" --yes || true
+            fi
+          done
+
+          # 현재 버전 릴리스가 이미 있으면 삭제 후 완전한 에셋으로 재생성
+          if gh release view "v${VER}" >/dev/null 2>&1; then
+            gh release delete "v${VER}" --yes || true
+          fi
+
+          gh release create "v${VER}" \
+            "$EXE_FILE" \
+            "$BLOCKMAP_FILE" \
+            "$YML_FILE" \
+            --title "나무 노트 v${VER}" \
+            --notes-file dist/release-notes.md \
+            --latest

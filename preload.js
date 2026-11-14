@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   removePassword: (currentPassword) => ipcRenderer.invoke('lock:remove-password', currentPassword),
   setTheme: (isDark) => ipcRenderer.invoke('theme:set', isDark),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  getUpdateStatus: () => ipcRenderer.invoke('updater:get-status'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   getAppInfo: () => ipcRenderer.invoke('app:info'),
   onUpdateStatus: (callback) => {

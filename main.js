@@ -13,6 +13,7 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const crypto = require('crypto');
 const { fileURLToPath, pathToFileURL } = require('url');
 const { SharedRoomManager } = require('./sharedRoomManager');
@@ -1182,6 +1183,87 @@ function formatUpdaterError(err) {
   };
 }
 
+function stripReleaseHtml(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<li>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function extractReleaseNotes(info) {
+  if (!info) return '';
+  if (typeof info.releaseNotes === 'string') {
+    return stripReleaseHtml(info.releaseNotes).slice(0, 4000);
+  }
+  if (Array.isArray(info.releaseNotes)) {
+    return info.releaseNotes
+      .map((entry) => {
+        if (typeof entry === 'string') return stripReleaseHtml(entry);
+        const verLabel = entry?.version ? `[v${entry.version}]\n` : '';
+        return `${verLabel}${stripReleaseHtml(entry?.note || '')}`;
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(0, 4000);
+  }
+  return '';
+}
+
+function fetchLatestGithubReleaseNotes() {
+  return new Promise((resolve) => {
+    const req = https.get(
+      'https://api.github.com/repos/SAN-50/AINote/releases/latest',
+      {
+        timeout: 5000,
+        headers: { 'User-Agent': 'TreeNote-Updater' }
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve('');
+          return;
+        }
+        const chunks = [];
+        let totalBytes = 0;
+        res.on('data', (chunk) => {
+          totalBytes += chunk.length;
+          if (totalBytes > 512 * 1024) {
+            req.destroy();
+            resolve('');
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const cleanBody = stripReleaseHtml(String(json?.body || ''));
+            resolve(cleanBody.slice(0, 4000));
+          } catch (_e) {
+            resolve('');
+          }
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve('');
+    });
+    req.on('error', () => resolve(''));
+  });
+}
+
 function setupAutoUpdater() {
   let autoUpdater;
   try {
@@ -1192,43 +1274,108 @@ function setupAutoUpdater() {
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoRunAppAfterInstall = true;
+  autoUpdater.fullChangelog = true;
+
+  let lastUpdateStatus = null;
+  let currentUpdateMeta = { version: '', releaseNotes: '' };
 
   const sendStatus = (statusObj) => {
+    lastUpdateStatus = statusObj;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater:status', statusObj);
     }
   };
 
+  const enrichReleaseNotesAsync = (targetVersion) => {
+    fetchLatestGithubReleaseNotes().then((fetchedNotes) => {
+      if (!fetchedNotes) return;
+      if (!currentUpdateMeta.version || currentUpdateMeta.version === targetVersion) {
+        currentUpdateMeta.releaseNotes = fetchedNotes;
+      }
+      if (
+        lastUpdateStatus &&
+        ['available', 'downloading', 'downloaded'].includes(lastUpdateStatus.state)
+      ) {
+        sendStatus({
+          ...lastUpdateStatus,
+          releaseNotes: lastUpdateStatus.releaseNotes || fetchedNotes
+        });
+      }
+    });
+  };
+
   autoUpdater.on('checking-for-update', () => {
     sendStatus({ state: 'checking', message: '업데이트 확인 중...' });
   });
+
   autoUpdater.on('update-available', (info) => {
+    const notes = extractReleaseNotes(info);
+    currentUpdateMeta = {
+      version: info?.version || '',
+      releaseNotes: notes
+    };
     sendStatus({
       state: 'available',
-      version: info?.version,
-      message: `새 버전(${info?.version}) 다운로드 중...`
+      version: currentUpdateMeta.version,
+      releaseNotes: notes,
+      progress: 0,
+      message: `새 버전(${info?.version})을 발견하여 다운로드 중입니다...`
+    });
+    if (!notes) {
+      enrichReleaseNotesAsync(info?.version);
+    }
+  });
+
+  autoUpdater.on('download-progress', (prog) => {
+    const percent = Math.min(100, Math.max(0, Math.round(prog?.percent || 0)));
+    sendStatus({
+      state: 'downloading',
+      version: currentUpdateMeta.version,
+      releaseNotes: currentUpdateMeta.releaseNotes,
+      progress: percent,
+      message: `새 버전(${currentUpdateMeta.version || ''}) 다운로드 중... (${percent}%)`
     });
   });
+
   autoUpdater.on('update-not-available', () => {
     sendStatus({ state: 'not-available', message: '현재 최신 버전을 사용 중입니다.' });
   });
+
   autoUpdater.on('error', (err) => {
+    if (lastUpdateStatus && lastUpdateStatus.state === 'downloaded') {
+      return;
+    }
     const formatted = formatUpdaterError(err);
     sendStatus({
       state: formatted.isNoRelease ? 'not-available' : 'error',
       message: formatted.message
     });
   });
+
   autoUpdater.on('update-downloaded', (info) => {
     const current = loadStoredDataInternal();
     if (current.exists && !current.corrupted) {
       createDailyBackupIfNeeded(current.data);
     }
+    const notes = extractReleaseNotes(info) || currentUpdateMeta.releaseNotes;
+    const version = info?.version || currentUpdateMeta.version;
+    currentUpdateMeta = { version, releaseNotes: notes };
     sendStatus({
       state: 'downloaded',
-      version: info?.version,
-      message: `새 버전(${info?.version})이 준비되었습니다. 재시작하면 적용됩니다.`
+      version,
+      releaseNotes: notes,
+      progress: 100,
+      message: `새 버전(${version}) 다운로드 완료! 지금 바로 업데이트할 수 있습니다.`
     });
+    if (!notes) {
+      enrichReleaseNotesAsync(version);
+    }
+  });
+
+  ipcMain.handle('updater:get-status', (event) => {
+    if (!isTrustedIpcSender(event)) return null;
+    return lastUpdateStatus;
   });
 
   ipcMain.handle('updater:check', async (event) => {
@@ -1252,14 +1399,16 @@ function setupAutoUpdater() {
   ipcMain.handle('updater:install', (event) => {
     if (!isTrustedIpcSender(event)) return;
     if (app.isPackaged) {
-      autoUpdater.quitAndInstall();
+      autoUpdater.quitAndInstall(false, true);
     }
   });
 
-  if (app.isPackaged) {
-    setTimeout(() => {
-      autoUpdater.checkForUpdates().catch(() => {});
-    }, 3000);
+  if (app.isPackaged && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        autoUpdater.checkForUpdates().catch(() => {});
+      }, 1200);
+    });
   }
 }
 
