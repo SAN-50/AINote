@@ -231,7 +231,8 @@ export function SharedSpacePanel({
       setHasOAuthClientSecret(Boolean(res.hasOAuthClientSecret));
       setOauthClientSecretInput('');
       setShowOAuthSetup(false);
-      showToast?.('Google OAuth 설정이 저장되었습니다. [Google로 로그인] 버튼을 눌러 진행하세요 ✓', 'success');
+      showToast?.('Google OAuth 설정이 저장되었습니다. Google 로그인 페이지를 엽니다...', 'success');
+      await handleBrowserOAuthLogin();
     } else {
       showToast?.(res?.error || 'Google OAuth 설정을 저장하지 못했습니다.', 'error');
     }
@@ -657,20 +658,24 @@ export function SharedSpacePanel({
           </span>
         </button>
 
-        {/* OAuth 상태 안내 및 설정 토글 */}
-        <div className="flex flex-col gap-3 pt-2 border-t border-line-light dark:border-line-dark">
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <span className={hasOAuthClientId ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-amber-600 dark:text-amber-400 font-semibold'}>
-              {hasOAuthClientId
-                ? '✓ Google OAuth 연결 준비됨 (클릭 시 Google 로그인 웹사이트가 열립니다)'
-                : '⚠️ 최초 1회 Google Cloud OAuth Client ID 등록이 필요합니다.'}
-            </span>
+        {/* OAuth 상태 안내 (미설정 시에만 표시) & 작은 설정 토글 */}
+        <div className="flex flex-col gap-3">
+          <div className={`flex items-center ${hasOAuthClientId ? 'justify-end' : 'justify-between'} gap-2 text-[11px]`}>
+            {!hasOAuthClientId && (
+              <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                ⚠️ 배포 전 앱 개발자의 Google OAuth Client ID 1회 등록이 필요합니다.
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setShowOAuthSetup((v) => !v)}
-              className="px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 font-semibold border border-line-light dark:border-line-dark shrink-0 transition-colors"
+              className={
+                hasOAuthClientId
+                  ? 'text-[11px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 underline underline-offset-2 transition-colors'
+                  : 'px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 font-semibold border border-line-light dark:border-line-dark shrink-0 transition-colors'
+              }
             >
-              ⚙️ {showOAuthSetup ? '설정 닫기' : 'OAuth 설정 및 방법'}
+              {showOAuthSetup ? '설정 닫기' : hasOAuthClientId ? '개발자 OAuth 설정' : '⚙️ OAuth 설정 및 방법'}
             </button>
           </div>
 
@@ -678,7 +683,7 @@ export function SharedSpacePanel({
             <form onSubmit={handleSaveOAuthConfig} className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-3 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-bold text-zinc-800 dark:text-zinc-200">
-                  Google Cloud OAuth 2.0 세팅 방법 (최초 1회)
+                  Google Cloud OAuth 2.0 세팅 (최초 1회)
                 </span>
                 {api?.openGoogleOAuthConsole && (
                   <button
@@ -692,10 +697,10 @@ export function SharedSpacePanel({
               </div>
 
               <ol className="list-decimal list-inside space-y-1 text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                <li>Google Cloud Console에서 프로젝트를 만들고 <b>API 및 서비스 → OAuth 동의 화면</b>(대상: 외부, 테스트 사용자에 본인 Gmail 추가)을 설정합니다.</li>
+                <li>Google Cloud Console에서 프로젝트를 만들고 <b>API 및 서비스 → OAuth 동의 화면</b>(대상: 외부)을 저장한 뒤, <b>게시 상태 → 앱 게시</b>를 누릅니다.</li>
                 <li><b>사용자 인증 정보 → + 사용자 인증 정보 만들기 → OAuth 클라이언트 ID</b>를 클릭합니다.</li>
                 <li>애플리케이션 유형에서 반드시 <b>데스크톱 앱(Desktop app)</b>을 선택 후 생성합니다.</li>
-                <li>발급된 <b>클라이언트 ID</b>와 <b>클라이언트 보안 비밀번호(Client Secret)</b>를 아래에 입력하고 저장합니다.</li>
+                <li>발급된 <b>클라이언트 ID</b>와 <b>클라이언트 보안 비밀번호(Client Secret)</b>를 아래에 입력하면 즉시 Google 로그인 페이지가 열립니다.</li>
               </ol>
 
               <div className="flex flex-col gap-2 pt-1">
@@ -726,7 +731,7 @@ export function SharedSpacePanel({
                   type="submit"
                   className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors"
                 >
-                  OAuth 설정 저장
+                  저장 후 Google로 로그인
                 </button>
               </div>
             </form>

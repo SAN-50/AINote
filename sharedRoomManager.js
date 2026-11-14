@@ -365,16 +365,38 @@ class SharedRoomManager {
     }
   }
 
+  resolveOAuthCredentials() {
+    let bundledClientId = '';
+    let bundledClientSecret = '';
+    try {
+      const defaultsPath = path.join(__dirname, 'oauth-defaults.json');
+      if (fs.existsSync(defaultsPath)) {
+        const parsed = JSON.parse(fs.readFileSync(defaultsPath, 'utf8'));
+        bundledClientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : '';
+        bundledClientSecret =
+          typeof parsed?.clientSecret === 'string' ? parsed.clientSecret.trim() : '';
+      }
+    } catch (_e) {
+      // ignore invalid bundled defaults
+    }
+
+    const savedId = this.storeData.oauthConfig?.clientId || '';
+    const savedSecret = this.storeData.oauthConfig?.clientSecret || '';
+    const clientId = savedId || bundledClientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
+    const clientSecret = savedId
+      ? savedSecret || bundledClientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || ''
+      : bundledClientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
+
+    return { clientId, clientSecret };
+  }
+
   getPublicState() {
-    const effectiveClientId =
-      this.storeData.oauthConfig?.clientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
-    const effectiveClientSecret =
-      this.storeData.oauthConfig?.clientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
+    const { clientId, clientSecret } = this.resolveOAuthCredentials();
     return {
       googleAccount: this.storeData.googleAccount,
-      hasOAuthClientId: Boolean(effectiveClientId),
-      hasOAuthClientSecret: Boolean(effectiveClientSecret),
-      oauthClientId: effectiveClientId,
+      hasOAuthClientId: Boolean(clientId),
+      hasOAuthClientSecret: Boolean(clientSecret),
+      oauthClientId: clientId,
       recentRooms: this.storeData.recentRooms || [],
       activeRoom: this.getActiveRoomSnapshot()
     };
@@ -442,10 +464,7 @@ class SharedRoomManager {
   }
 
   async startGoogleOAuthBrowserFlow() {
-    const clientId =
-      this.storeData.oauthConfig?.clientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
-    const clientSecret =
-      this.storeData.oauthConfig?.clientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
+    const { clientId, clientSecret } = this.resolveOAuthCredentials();
     if (!clientId) {
       return {
         ok: false,
@@ -507,9 +526,14 @@ class SharedRoomManager {
               <head><meta charset="utf-8"><title>나무 노트 - Google 로그인</title></head>
               <body style="font-family:sans-serif;background:#0F1014;color:#F3F4F6;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
                 <div style="background:#1C1E26;padding:32px 40px;border-radius:16px;border:1px solid #2A2D3A;text-align:center;">
-                  <h2 style="margin:0 0 8px 0;">🌲 나무 노트 Google 인증 처리 완료</h2>
-                  <p style="margin:0;color:#9CA3AF;font-size:14px;">이 브라우저 창을 닫고 나무 노트 앱으로 돌아가세요.</p>
+                  <h2 style="margin:0 0 8px 0;">🌲 나무 노트 Google 로그인 완료</h2>
+                  <p style="margin:0;color:#9CA3AF;font-size:14px;">자동으로 나무 노트 앱으로 돌아갑니다. 탭이 닫히지 않으면 이 창을 닫아 주세요.</p>
                 </div>
+                <script>
+                  setTimeout(function () {
+                    try { window.open('', '_self'); window.close(); } catch (_e) {}
+                  }, 500);
+                </script>
               </body>
             </html>`);
 

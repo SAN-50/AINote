@@ -1115,9 +1115,11 @@ ipcMain.handle('shared:save-oauth-config', (event, config) => {
 ipcMain.handle('shared:google-oauth-login', async (event) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   const res = await sharedRoomManager.startGoogleOAuthBrowserFlow();
-  if (res.ok && mainWindow && !mainWindow.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
     mainWindow.focus();
+    mainWindow.moveTop();
   }
   return res;
 });
