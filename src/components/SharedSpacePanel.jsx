@@ -68,6 +68,8 @@ export function SharedSpacePanel({
 
   // Lobby inputs (Host / Join)
   const [recentRooms, setRecentRooms] = useState([]);
+  const [savedRooms, setSavedRooms] = useState([]);
+  const [importBackupDraft, setImportBackupDraft] = useState(null);
   const [hostRoomName, setHostRoomName] = useState('');
   const [hostPassword, setHostPassword] = useState('');
   const [hostPermissionMode, setHostPermissionMode] = useState('all');
@@ -78,6 +80,9 @@ export function SharedSpacePanel({
 
   // Active Room State
   const [activeRoom, setActiveRoom] = useState(null);
+  const [showRoomManageModal, setShowRoomManageModal] = useState(false);
+  const [editingSectionId, setEditingSectionId] = useState(null);
+  const [editingSectionTitle, setEditingSectionTitle] = useState('');
   const [viewMode, setViewMode] = useState('board'); // 'board' | 'grid' | 'checklist'
   const [selectedFolderId, setSelectedFolderId] = useState('all-notes');
   const [roomSearch, setRoomSearch] = useState('');
@@ -144,6 +149,7 @@ export function SharedSpacePanel({
           setLoginIdInput(res.lastAccountId);
         }
         setRecentRooms(res.recentRooms || []);
+        setSavedRooms(res.savedRooms || []);
         setActiveRoom(res.activeRoom || null);
       }
       if (mounted) setLoadingInit(false);
@@ -350,6 +356,7 @@ export function SharedSpacePanel({
         setActiveRoom(res.room);
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
         showToast?.(`'${res.room.roomName}' 방 호스트를 시작했습니다 ✓`, 'success');
       } else {
         showToast?.(res?.error || '방 생성에 실패했습니다.', 'error');
@@ -373,6 +380,7 @@ export function SharedSpacePanel({
         setActiveRoom(res.room);
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
         showToast?.(`'${res.room.roomName}' 방에 입장했습니다 ✓`, 'success');
       } else {
         showToast?.(res?.error || '방 입장에 실패했습니다.', 'error');
@@ -387,7 +395,88 @@ export function SharedSpacePanel({
     await api.leaveSharedRoom();
     setActiveRoom(null);
     setSelectedNoteIds([]);
+    setShowRoomManageModal(false);
+    const stateRes = await api.getSharedState();
+    if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+    if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
     showToast?.('방에서 나왔습니다.', 'info');
+  };
+
+  const handleSaveRoomNow = async () => {
+    if (!api?.saveSharedRoomNow) return;
+    const res = await api.saveSharedRoomNow();
+    if (res?.ok) {
+      if (res.room) setActiveRoom(res.room);
+      if (res.state?.savedRooms) setSavedRooms(res.state.savedRooms);
+      showToast?.('현재 방 상태와 모든 공유 노트가 저장되었습니다 ✓', 'success');
+    } else {
+      showToast?.(res?.error || '방 저장에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleExportRoom = async (roomId) => {
+    if (!api?.exportSharedRoom) return;
+    const res = await api.exportSharedRoom({ roomId });
+    if (res?.ok) {
+      showToast?.('공유 방 백업 파일(.json)이 저장되었습니다 ✓', 'success');
+    } else if (!res?.canceled) {
+      showToast?.(res?.error || '백업 파일 내보내기에 실패했습니다.', 'error');
+    }
+  };
+
+  const handlePickRoomBackup = async () => {
+    if (!api?.pickSharedRoomBackup) return;
+    const res = await api.pickSharedRoomBackup();
+    if (res?.ok && res.backupData) {
+      setImportBackupDraft({
+        backupData: res.backupData,
+        roomName: res.defaultRoomName || '',
+        password: '',
+        noteCount: res.noteCount || 0,
+        messageCount: res.messageCount || 0
+      });
+    } else if (!res?.canceled) {
+      showToast?.(res?.error || '백업 파일을 열지 못했습니다.', 'error');
+    }
+  };
+
+  const handleConfirmImportBackup = async (e) => {
+    e.preventDefault();
+    if (!api?.importSharedRoom || !importBackupDraft) return;
+    const res = await api.importSharedRoom({
+      backupData: importBackupDraft.backupData,
+      roomName: importBackupDraft.roomName,
+      password: importBackupDraft.password
+    });
+    if (res?.ok) {
+      if (res.state?.savedRooms) setSavedRooms(res.state.savedRooms);
+      if (res.state?.recentRooms) setRecentRooms(res.state.recentRooms);
+      setHostRoomName(res.roomName || '');
+      setHostPassword(importBackupDraft.password);
+      setImportBackupDraft(null);
+      showToast?.(`'${res.roomName}' 방을 복원했습니다. [방 호스트 시작하기]를 누르면 바로 열립니다 ✓`, 'success');
+    } else {
+      showToast?.(res?.error || '방 복원에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleDeleteSavedRoom = async (roomId, roomName) => {
+    if (!api?.deleteSavedSharedRoom) return;
+    if (!window.confirm(`'${roomName}' 공유 방과 방 안의 모든 그룹 노트·채팅 기록을 영구 삭제하시겠습니까?`)) {
+      return;
+    }
+    const res = await api.deleteSavedSharedRoom({ roomId });
+    if (res?.ok) {
+      if (res.state?.savedRooms) setSavedRooms(res.state.savedRooms);
+      if (res.state?.recentRooms) setRecentRooms(res.state.recentRooms);
+      if (activeRoom?.roomId === roomId) {
+        setActiveRoom(null);
+        setShowRoomManageModal(false);
+      }
+      showToast?.(`'${roomName}' 방이 영구 삭제되었습니다.`, 'info');
+    } else {
+      showToast?.(res?.error || '방 삭제에 실패했습니다.', 'error');
+    }
   };
 
   const handleCopyInviteInfo = async () => {
@@ -511,6 +600,26 @@ export function SharedSpacePanel({
     }
   };
 
+  const handleBatchDeleteNotes = async () => {
+    if (selectedNoteIds.length === 0) return;
+    if (!window.confirm(`선택한 공유 노트 ${selectedNoteIds.length}개를 방에서 삭제하시겠습니까?`)) {
+      return;
+    }
+    const res = await api.dispatchSharedAction({
+      type: 'DELETE_NOTES_BATCH',
+      noteIds: selectedNoteIds
+    });
+    if (res?.ok) {
+      if (viewingSharedNote && selectedNoteIds.includes(viewingSharedNote.id)) {
+        setViewingSharedNote(null);
+      }
+      setSelectedNoteIds([]);
+      showToast?.('선택한 공유 노트가 삭제되었습니다 ✓', 'success');
+    } else {
+      showToast?.(res?.error || '일괄 삭제 권한이 없습니다.', 'error');
+    }
+  };
+
   const handleToggleChecklistItem = async (noteId, itemId) => {
     await api.dispatchSharedAction({
       type: 'TOGGLE_CHECKLIST_ITEM',
@@ -609,6 +718,54 @@ export function SharedSpacePanel({
       setShowNewFolderInput(false);
     } else {
       showToast?.(res?.error || '폴더 추가 실패', 'error');
+    }
+  };
+
+  const handleRenameSection = async (e) => {
+    e.preventDefault();
+    if (!editingSectionId || !editingSectionTitle.trim()) return;
+    const res = await api.dispatchSharedAction({
+      type: 'RENAME_SECTION',
+      sectionId: editingSectionId,
+      title: editingSectionTitle.trim()
+    });
+    if (res?.ok) {
+      setEditingSectionId(null);
+      setEditingSectionTitle('');
+      showToast?.('섹션 이름이 변경되었습니다 ✓', 'success');
+    } else {
+      showToast?.(res?.error || '섹션 이름 변경 실패', 'error');
+    }
+  };
+
+  const handleDeleteSection = async (section) => {
+    if (!window.confirm(`'${section.title}' 섹션을 삭제하시겠습니까? 섹션 안의 노트는 첫 번째 섹션으로 이동됩니다.`)) {
+      return;
+    }
+    const res = await api.dispatchSharedAction({
+      type: 'DELETE_SECTION',
+      sectionId: section.id
+    });
+    if (res?.ok) {
+      showToast?.('섹션이 삭제되었습니다.', 'info');
+    } else {
+      showToast?.(res?.error || '섹션 삭제 실패', 'error');
+    }
+  };
+
+  const handleDeleteFolder = async (folder) => {
+    if (!window.confirm(`'${folder.name}' 폴더를 삭제하시겠습니까? 노트는 [전체 공유 노트]로 이동됩니다.`)) {
+      return;
+    }
+    const res = await api.dispatchSharedAction({
+      type: 'DELETE_FOLDER',
+      folderId: folder.id
+    });
+    if (res?.ok) {
+      if (selectedFolderId === folder.id) setSelectedFolderId('all-notes');
+      showToast?.('폴더가 삭제되었습니다.', 'info');
+    } else {
+      showToast?.(res?.error || '폴더 삭제 실패', 'error');
     }
   };
 
@@ -1067,7 +1224,7 @@ export function SharedSpacePanel({
                   열려 있는 공유 방 들어가기
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                  호스트가 알려준 방 이름과 비밀번호를 입력해 입장하세요.
+                  다른 PC·다른 네트워크에서도 방 이름과 비밀번호만으로 바로 입장됩니다.
                 </p>
               </div>
 
@@ -1097,13 +1254,13 @@ export function SharedSpacePanel({
 
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
-                  초대 코드 / 호스트 주소 <span className="text-[11px] font-normal text-zinc-400">(같은 공유기·내 PC에서는 비워두어도 자동 연결)</span>
+                  초대 코드 <span className="text-[11px] font-normal text-zinc-400">(선택 사항 · 비워두어도 온라인 자동 탐색)</span>
                 </label>
                 <input
                   type="text"
                   value={joinHostCode}
                   onChange={(e) => setJoinHostCode(e.target.value)}
-                  placeholder="선택 사항: 다른 네트워크일 때 초대 코드 입력"
+                  placeholder="선택 사항: 초대 코드 또는 복사된 초대 메시지 붙여넣기"
                   className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:border-emerald-500"
                 />
               </div>
@@ -1114,10 +1271,169 @@ export function SharedSpacePanel({
               disabled={roomActionBusy}
               className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors mt-2"
             >
-              {roomActionBusy ? '방 찾는 중...' : '✨ 방 입장하기'}
+              {roomActionBusy ? '온라인 / LAN 방 탐색 중...' : '✨ 방 입장하기'}
             </button>
           </form>
         </div>
+
+        {/* 저장된 내 공유 방 (호스트 생성 후 자동 저장됨 · 열기 / 백업 내보내기 / 영구 삭제 / 백업 불러오기) */}
+        <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div>
+              <h4 className="text-xs font-extrabold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                💾 저장된 내 공유 방 ({savedRooms.length})
+              </h4>
+              <p className="text-[11px] text-zinc-400 mt-0.5">
+                만든 방과 노트·채팅 내역은 자동으로 이 기기에 영구 저장되며 언제든 다시 열거나 파일로 백업할 수 있습니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handlePickRoomBackup}
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 shrink-0 transition-colors"
+            >
+              📂 백업 파일(.json)에서 방 불러오기
+            </button>
+          </div>
+
+          {savedRooms.length === 0 ? (
+            <div className="py-5 text-center text-xs text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
+              아직 저장된 공유 방이 없습니다. 위에서 새 방을 호스트하면 자동 저장됩니다.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {savedRooms.map((sr) => (
+                <div
+                  key={sr.roomId}
+                  className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                      {sr.roomName}
+                    </div>
+                    <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                      노트 {sr.noteCount}개 · 채팅 {sr.messageCount}개 · 최근 저장{' '}
+                      {sr.updatedAt
+                        ? new Date(sr.updatedAt).toLocaleDateString('ko-KR', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                        : '-'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHostRoomName(sr.roomName);
+                        setHostPermissionMode(sr.permissionMode || 'all');
+                        showToast?.(`'${sr.roomName}' 방이 선택되었습니다. 비밀번호 입력 후 [방 호스트 시작하기]를 누르세요.`, 'info');
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold transition-colors"
+                    >
+                      열기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleExportRoom(sr.roomId)}
+                      title="백업 파일(.json)로 저장"
+                      className="px-2 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-[11px] font-bold text-zinc-700 dark:text-zinc-200 transition-colors"
+                    >
+                      백업
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSavedRoom(sr.roomId, sr.roomName)}
+                      title="저장된 방 영구 삭제"
+                      className="px-2 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white text-[11px] font-bold transition-colors"
+                    >
+                      삭제
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 백업 파일 복원 모달 */}
+        {importBackupDraft && (
+          <div
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setImportBackupDraft(null)}
+          >
+            <form
+              onSubmit={handleConfirmImportBackup}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-5 flex flex-col gap-4"
+            >
+              <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-3">
+                <div>
+                  <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                    📂 공유 방 백업 복원
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    공유 노트 {importBackupDraft.noteCount}개 · 채팅 {importBackupDraft.messageCount}개를 불러옵니다.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setImportBackupDraft(null)}
+                  className="text-sm text-zinc-400 hover:text-zinc-600"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">방 이름</label>
+                <input
+                  type="text"
+                  required
+                  minLength={2}
+                  value={importBackupDraft.roomName}
+                  onChange={(e) =>
+                    setImportBackupDraft((prev) => ({ ...prev, roomName: e.target.value }))
+                  }
+                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                  입장 비밀번호 설정 (2자 이상)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={2}
+                  value={importBackupDraft.password}
+                  onChange={(e) =>
+                    setImportBackupDraft((prev) => ({ ...prev, password: e.target.value }))
+                  }
+                  placeholder="멤버와 공유할 비밀번호 입력"
+                  autoFocus
+                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setImportBackupDraft(null)}
+                  className="px-3 py-2 rounded-xl bg-muted-light dark:bg-muted-dark text-xs font-bold text-zinc-600 dark:text-zinc-300"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+                >
+                  복원 후 저장
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
 
         {/* 최근 호스트/참여했던 방 목록 */}
         {recentRooms.length > 0 && (
@@ -1297,9 +1613,25 @@ export function SharedSpacePanel({
                   ? '🛡️ 삭제 보호'
                   : '✏️ 모두 편집'}
               </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap border ${
+                  activeRoom.relayConnected
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25'
+                    : 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
+                }`}
+                title="다른 PC·외부 네트워크 접속 가능 상태"
+              >
+                {activeRoom.relayConnected ? '🌐 온라인 연결됨' : '📡 로컬 네트워크'}
+              </span>
             </div>
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-              방장: {activeRoom.hostProfile?.name} (@{activeRoom.hostProfile?.accountId || 'host'}) · 암호화 동기화 중
+              방장: {activeRoom.hostProfile?.name} (@{activeRoom.hostProfile?.accountId || 'host'}) · 💾 자동 저장됨
+              {activeRoom.lastSavedAt
+                ? ` (${new Date(activeRoom.lastSavedAt).toLocaleTimeString('ko-KR', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })})`
+                : ''}
             </p>
           </div>
         </div>
@@ -1404,6 +1736,24 @@ export function SharedSpacePanel({
 
           <button
             type="button"
+            onClick={handleSaveRoomNow}
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+            title="현재 방 상태를 즉시 저장"
+          >
+            💾 방 저장
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowRoomManageModal(true)}
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+            title="백업 내보내기 및 방 설정·삭제"
+          >
+            ⚙️ 방 관리
+          </button>
+
+          <button
+            type="button"
             onClick={handleLeaveRoom}
             className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors whitespace-nowrap shrink-0"
           >
@@ -1420,19 +1770,36 @@ export function SharedSpacePanel({
             {(activeRoom.folders || []).map((folder) => {
               const active = selectedFolderId === folder.id;
               return (
-                <button
-                  key={folder.id}
-                  type="button"
-                  onClick={() => setSelectedFolderId(folder.id)}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
-                    active
-                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 shadow-sm'
-                      : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
-                  }`}
-                >
-                  <span>{folder.icon || '📁'}</span>
-                  <span>{folder.name}</span>
-                </button>
+                <div key={folder.id} className="inline-flex items-center group">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFolderId(folder.id)}
+                    className={`px-2.5 py-1 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      isHost && folder.id !== 'all-notes' ? 'rounded-l-xl' : 'rounded-xl'
+                    } ${
+                      active
+                        ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 shadow-sm'
+                        : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
+                    }`}
+                  >
+                    <span>{folder.icon || '📁'}</span>
+                    <span>{folder.name}</span>
+                  </button>
+                  {isHost && folder.id !== 'all-notes' && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteFolder(folder)}
+                      title={`'${folder.name}' 폴더 삭제`}
+                      className={`px-1.5 py-1 rounded-r-xl text-[10px] font-bold border-y border-r transition-colors ${
+                        active
+                          ? 'bg-zinc-800 dark:bg-zinc-200 text-zinc-300 dark:text-zinc-700 border-zinc-700 dark:border-zinc-300 hover:text-red-400'
+                          : 'bg-canvas-light dark:bg-canvas-dark text-zinc-400 hover:text-red-500 border-line-light dark:border-line-dark'
+                      }`}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
               );
             })}
 
@@ -1608,6 +1975,13 @@ export function SharedSpacePanel({
             </select>
             <button
               type="button"
+              onClick={handleBatchDeleteNotes}
+              className="px-2.5 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-bold shadow-sm"
+            >
+              🗑️ 선택 삭제
+            </button>
+            <button
+              type="button"
               onClick={() => setSelectedNoteIds([])}
               className="px-2.5 py-1.5 rounded-lg bg-blue-800/60 hover:bg-blue-800 text-xs font-bold"
             >
@@ -1652,22 +2026,76 @@ export function SharedSpacePanel({
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <h3 className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
-                          {section.title}
-                        </h3>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300">
-                          {sectionNotes.length}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openCreateNoteModal(section.id)}
-                        className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-0.5 rounded-lg"
-                        title="이 섹션에 노트 추가"
-                      >
-                        + 추가
-                      </button>
+                      {editingSectionId === section.id ? (
+                        <form onSubmit={handleRenameSection} className="flex items-center gap-1 flex-1 min-w-0">
+                          <input
+                            type="text"
+                            value={editingSectionTitle}
+                            onChange={(e) => setEditingSectionTitle(e.target.value)}
+                            autoFocus
+                            className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-bold text-zinc-900 dark:text-white outline-none"
+                          />
+                          <button
+                            type="submit"
+                            className="text-[11px] font-bold text-blue-600 px-1.5 py-0.5"
+                          >
+                            저장
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSectionId(null)}
+                            className="text-[11px] text-zinc-400 px-1"
+                          >
+                            ✕
+                          </button>
+                        </form>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <h3 className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                              {section.title}
+                            </h3>
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 shrink-0">
+                              {sectionNotes.length}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {isHost && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingSectionId(section.id);
+                                    setEditingSectionTitle(section.title);
+                                  }}
+                                  className="text-[11px] text-zinc-400 hover:text-blue-500 px-1"
+                                  title="섹션 이름 변경"
+                                >
+                                  ✏️
+                                </button>
+                                {(activeRoom.sections || []).length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteSection(section)}
+                                    className="text-[11px] text-zinc-400 hover:text-red-500 px-1"
+                                    title="섹션 삭제"
+                                  >
+                                    🗑️
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => openCreateNoteModal(section.id)}
+                              className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-0.5 rounded-lg"
+                              title="이 섹션에 노트 추가"
+                            >
+                              + 추가
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
 
                     <div className="flex flex-col gap-2.5 min-h-[120px]">
@@ -2421,17 +2849,37 @@ export function SharedSpacePanel({
               </div>
             )}
 
-            <div className="flex items-center justify-between pt-2 border-t border-line-light dark:border-line-dark">
-              <button
-                type="button"
-                onClick={() => {
-                  onSaveToPersonalNotes?.(viewingSharedNote);
-                  setViewingSharedNote(null);
-                }}
-                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
-              >
-                📥 내 개인 노트로 복사 저장
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-line-light dark:border-line-dark">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSaveToPersonalNotes?.(viewingSharedNote);
+                    setViewingSharedNote(null);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                >
+                  📥 내 개인 노트로 복사 저장
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const n = viewingSharedNote;
+                    setChatOpen(true);
+                    setChatShareNoteRef({
+                      id: n.id,
+                      title: n.title,
+                      sectionId: n.sectionId,
+                      statusBadge: n.statusBadge
+                    });
+                    setViewingSharedNote(null);
+                    showToast?.('채팅창에 노트가 첨부되었습니다.', 'info');
+                  }}
+                  className="px-3 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-bold"
+                >
+                  💬 채팅 공유
+                </button>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -2565,6 +3013,105 @@ export function SharedSpacePanel({
                 ))
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          MODAL 5: 방 관리 · 저장 · 백업 · 영구 삭제 모달
+         ======================================================================== */}
+      {showRoomManageModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowRoomManageModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-md rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4 max-h-[88vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-3">
+              <div>
+                <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                  ⚙️ 방 관리 · 저장 ({activeRoom.roomName})
+                </h3>
+                <p className="text-[11px] text-zinc-400 mt-0.5">
+                  공유 노트 {(activeRoom.notes || []).length}개 · 채팅 {(activeRoom.messages || []).length}개
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRoomManageModal(false)}
+                className="text-sm text-zinc-400 hover:text-zinc-600"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-zinc-700 dark:text-zinc-300">네트워크 연결 상태</span>
+                <span className={activeRoom.relayConnected ? 'text-emerald-600 font-bold' : 'text-zinc-500 font-bold'}>
+                  {activeRoom.relayConnected ? '🌐 온라인 중계 + LAN 활성' : '📡 로컬 네트워크(LAN)'}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                {activeRoom.relayConnected
+                  ? '다른 네트워크·외부 PC에서도 방 이름과 비밀번호만으로 바로 입장할 수 있습니다.'
+                  : '현재 로컬 네트워크(LAN) 모드입니다. 인터넷 연결을 확인하면 외부에서도 입장할 수 있습니다.'}
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleSaveRoomNow}
+                className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors text-left flex items-center justify-between"
+              >
+                <span>💾 이 기기에 방 상태 즉시 저장하기</span>
+                <span className="text-[11px] opacity-80">로컬 저장소</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleExportRoom(activeRoom.roomId)}
+                className="w-full py-2.5 px-4 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200 text-xs font-bold transition-colors text-left flex items-center justify-between"
+              >
+                <span>📤 백업 파일(.json)로 내보내기</span>
+                <span className="text-[11px] text-zinc-400">파일 저장</span>
+              </button>
+            </div>
+
+            {isHost && (
+              <div className="pt-3 border-t border-line-light dark:border-line-dark flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                    방 편집 권한 설정
+                  </label>
+                  <select
+                    value={activeRoom.permissionMode || 'all'}
+                    onChange={(e) =>
+                      api.dispatchSharedAction({
+                        type: 'SET_PERMISSION_MODE',
+                        permissionMode: e.target.value
+                      })
+                    }
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  >
+                    <option value="all">모두 편집 가능</option>
+                    <option value="host-delete">호스트만 삭제 가능</option>
+                    <option value="readonly">읽기 전용 (호스트만 작성)</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleDeleteSavedRoom(activeRoom.roomId, activeRoom.roomName)}
+                  className="w-full py-2.5 rounded-xl bg-red-500/10 hover:bg-red-600 text-red-600 dark:text-red-400 hover:text-white border border-red-500/30 text-xs font-bold transition-colors"
+                >
+                  🗑️ 이 공유 방 및 그룹 노트 영구 삭제
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

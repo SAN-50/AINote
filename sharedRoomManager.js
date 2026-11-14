@@ -29,6 +29,14 @@ const RESERVED_ACCOUNT_IDS = new Set([
   'undefined'
 ]);
 const BLOCKED_INVITE_PORTS = new Set([3306, 5432, 6379, 27017, 9200, 11211]);
+const RELAY_ENDPOINTS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt'
+];
+const RELAY_CHUNK_CHARS = 32 * 1024;
+const RELAY_REASSEMBLY_TTL_MS = 20 * 1000;
+const RELAY_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 function normalizeAccountId(rawId) {
   return String(rawId || '')
@@ -198,44 +206,509 @@ function isSafeSharedImage(dataUrl) {
   return /^data:image\/(png|jpeg|jpg|gif|webp|bmp);base64,[A-Za-z0-9+/=\s]+$/i.test(dataUrl);
 }
 
-function getLocalLanIp() {
+function ipToInt(ip) {
+  const parts = String(ip || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return null;
+  }
+  return (((parts[0] << 24) >>> 0) + ((parts[1] << 16) >>> 0) + ((parts[2] << 8) >>> 0) + parts[3]) >>> 0;
+}
+
+function intToIp(num) {
+  return [(num >>> 24) & 255, (num >>> 16) & 255, (num >>> 8) & 255, num & 255].join('.');
+}
+
+function computeBroadcastAddress(ip, netmask) {
+  const ipInt = ipToInt(ip);
+  const maskInt = ipToInt(netmask);
+  if (ipInt === null || maskInt === null) return null;
+  const bcast = (ipInt | (~maskInt >>> 0)) >>> 0;
+  return intToIp(bcast);
+}
+
+function isVirtualInterface(ifName, ip) {
+  const name = String(ifName || '').toLowerCase();
+  if (
+    /vethernet|virtualbox|vbox|vmware|hyper-v|wsl|docker|bridge|tun|tap|tailscale|zerotier|hamachi|loopback|nordlynx|wireguard|teredo|isatap/.test(
+      name
+    )
+  ) {
+    return true;
+  }
+  if (/^192\.168\.56\.|^192\.168\.99\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) {
+    return true;
+  }
+  return false;
+}
+
+function getAllLanInterfaces() {
   const interfaces = os.networkInterfaces();
+  const list = [];
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name] || []) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
+      if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+        const virtual = isVirtualInterface(name, iface.address);
+        const physicalBoost = /wi-fi|wifi|wlan|ethernet|이더넷|wireless|en0|eth0/i.test(name) ? 0 : 1;
+        list.push({
+          name,
+          address: iface.address,
+          netmask: iface.netmask || '255.255.255.0',
+          broadcast: computeBroadcastAddress(iface.address, iface.netmask || '255.255.255.0'),
+          isVirtual: virtual,
+          rank: (virtual ? 10 : 0) + physicalBoost
+        });
       }
     }
   }
-  return '127.0.0.1';
+  list.sort((a, b) => a.rank - b.rank);
+  return list;
 }
 
-function encodeInviteCode(host, port) {
-  return Buffer.from(`${host}:${port}`, 'utf8').toString('base64url');
+function getLocalLanIp() {
+  const list = getAllLanInterfaces();
+  return list.length > 0 ? list[0].address : '127.0.0.1';
+}
+
+function encodeInviteCode(endpointsOrHost, port) {
+  if (Array.isArray(endpointsOrHost)) {
+    const seen = new Set();
+    const parts = [];
+    for (const item of endpointsOrHost) {
+      if (!item || !item.host || !item.port) continue;
+      const key = `${item.host}:${item.port}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(key);
+      if (parts.length >= 5) break;
+    }
+    return Buffer.from(parts.join(','), 'utf8').toString('base64url');
+  }
+  return Buffer.from(`${endpointsOrHost}:${port}`, 'utf8').toString('base64url');
+}
+
+function parseEndpointPairList(str) {
+  const out = [];
+  const seen = new Set();
+  for (const token of String(str || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)) {
+    const lastColon = token.lastIndexOf(':');
+    if (lastColon <= 0) continue;
+    let host = token.slice(0, lastColon).trim();
+    const port = Number(token.slice(lastColon + 1).trim());
+    if (host.toLowerCase() === 'localhost') host = '127.0.0.1';
+    if (isSafeInviteTarget(host, port)) {
+      const key = `${host}:${port}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ host, port });
+      }
+    }
+  }
+  return out;
 }
 
 function decodeInviteCode(code) {
+  const results = [];
+  const seen = new Set();
+  const pushAll = (items) => {
+    for (const item of items) {
+      const key = `${item.host}:${item.port}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(item);
+      }
+    }
+  };
+
   try {
     const raw = String(code || '').trim();
-    if (!raw) return null;
-    if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(raw) || /^localhost:\d{2,5}$/i.test(raw)) {
-      const [h, p] = raw.split(':');
-      const host = h.toLowerCase() === 'localhost' ? '127.0.0.1' : h;
-      const portNum = Number(p);
-      if (isSafeInviteTarget(host, portNum)) {
-        return { host, port: portNum };
+    if (!raw) return [];
+
+    // 1) Support pasting the entire multi-line invitation message copied from Share button
+    const candidates = [raw];
+    const inviteLineMatch = raw.match(/초대\s*코드\s*:\s*([A-Za-z0-9_.:-]+)/i);
+    if (inviteLineMatch) candidates.unshift(inviteLineMatch[1].trim());
+    const directMatches = raw.match(/(?:localhost|\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}/gi);
+    if (directMatches) candidates.push(...directMatches);
+
+    for (const cand of candidates) {
+      const clean = cand.trim();
+      if (!clean) continue;
+      // Direct host:port or comma-separated list
+      if (clean.includes(':')) {
+        pushAll(parseEndpointPairList(clean));
+        continue;
       }
+      // Base64url single or comma-separated host:port list
+      if (/^[A-Za-z0-9_-]{8,}$/.test(clean)) {
+        try {
+          const decoded = Buffer.from(clean, 'base64url').toString('utf8');
+          pushAll(parseEndpointPairList(decoded));
+        } catch (_e) {
+          // ignore invalid base64url segment
+        }
+      }
+    }
+  } catch (_e) {
+    // ignore parse failures
+  }
+  return results;
+}
+
+function deriveRelayTopic(roomId, authToken) {
+  const tag = crypto
+    .createHmac('sha256', 'treenote-relay-v1')
+    .update(`${roomId}:${authToken}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `treenote/room/v1/${tag}`;
+}
+
+function encodeMqttVarInt(num) {
+  const bytes = [];
+  let x = num;
+  do {
+    let encoded = x % 128;
+    x = Math.floor(x / 128);
+    if (x > 0) encoded |= 0x80;
+    bytes.push(encoded);
+  } while (x > 0);
+  return Buffer.from(bytes);
+}
+
+function encodeMqttString(str) {
+  const strBuf = Buffer.from(String(str || ''), 'utf8');
+  const lenBuf = Buffer.allocUnsafe(2);
+  lenBuf.writeUInt16BE(strBuf.length, 0);
+  return Buffer.concat([lenBuf, strBuf]);
+}
+
+function buildMqttPacket(typeFlags, varHeader, payload) {
+  const vh = varHeader || Buffer.alloc(0);
+  const pl = payload || Buffer.alloc(0);
+  const remLen = encodeMqttVarInt(vh.length + pl.length);
+  return Buffer.concat([Buffer.from([typeFlags]), remLen, vh, pl]);
+}
+
+class MqttWsRelayClient {
+  constructor({ topic, endpoints, onMessage, onClose, onConnected }) {
+    this.topic = topic;
+    this.endpoints = Array.isArray(endpoints) && endpoints.length > 0 ? endpoints : RELAY_ENDPOINTS;
+    this.onMessage = typeof onMessage === 'function' ? onMessage : () => {};
+    this.onClose = typeof onClose === 'function' ? onClose : () => {};
+    this.onConnected = typeof onConnected === 'function' ? onConnected : () => {};
+    this.clientId = `tn_${crypto.randomBytes(6).toString('hex')}`;
+    this.ws = null;
+    this.activeEndpoint = '';
+    this.connected = false;
+    this.closed = false;
+    this.rxBuf = Buffer.alloc(0);
+    this.keepaliveTimer = null;
+    this.chunkMap = new Map();
+  }
+
+  _buildConnectPacket() {
+    const varHeader = Buffer.concat([
+      encodeMqttString('MQTT'),
+      Buffer.from([0x04, 0x02, 0x00, 0x1e]) // MQTT 3.1.1, clean session, keepalive 30s
+    ]);
+    return buildMqttPacket(0x10, varHeader, encodeMqttString(this.clientId));
+  }
+
+  _buildSubscribePacket() {
+    const varHeader = Buffer.from([0x00, 0x01]);
+    const payload = Buffer.concat([encodeMqttString(this.topic), Buffer.from([0x00])]);
+    return buildMqttPacket(0x82, varHeader, payload);
+  }
+
+  _buildPublishPacket(payloadBuf) {
+    return buildMqttPacket(0x30, encodeMqttString(this.topic), payloadBuf);
+  }
+
+  _handleIncomingBytes(chunk) {
+    this.rxBuf = Buffer.concat([this.rxBuf, chunk]);
+    if (this.rxBuf.length > RELAY_MAX_TOTAL_BYTES) {
+      this.rxBuf = Buffer.alloc(0);
       return null;
     }
-    const decoded = Buffer.from(raw, 'base64url').toString('utf8');
-    const [host, portStr] = decoded.split(':');
-    const port = Number(portStr);
-    if (isSafeInviteTarget(host, port)) {
-      return { host, port };
+    const events = [];
+    while (this.rxBuf.length >= 2) {
+      let multiplier = 1;
+      let remLen = 0;
+      let offset = 1;
+      let encodedByte = 0;
+      let incomplete = false;
+      do {
+        if (offset >= this.rxBuf.length) {
+          incomplete = true;
+          break;
+        }
+        encodedByte = this.rxBuf[offset++];
+        remLen += (encodedByte & 0x7f) * multiplier;
+        multiplier *= 128;
+        if (multiplier > 128 * 128 * 128) {
+          this.rxBuf = Buffer.alloc(0);
+          return events;
+        }
+      } while ((encodedByte & 0x80) !== 0);
+
+      if (incomplete || this.rxBuf.length < offset + remLen) break;
+
+      const packetTypeByte = this.rxBuf[0];
+      const packetType = packetTypeByte >> 4;
+      const body = this.rxBuf.subarray(offset, offset + remLen);
+      this.rxBuf = this.rxBuf.subarray(offset + remLen);
+
+      if (packetType === 2 && body.length >= 2) {
+        events.push({ type: 'CONNACK', rc: body[1] });
+      } else if (packetType === 9) {
+        events.push({ type: 'SUBACK' });
+      } else if (packetType === 3 && body.length >= 2) {
+        const topicLen = body.readUInt16BE(0);
+        const qos = (packetTypeByte >> 1) & 0x03;
+        let payloadStart = 2 + topicLen + (qos > 0 ? 2 : 0);
+        if (payloadStart <= body.length) {
+          const msgStr = body.subarray(payloadStart).toString('utf8');
+          events.push({ type: 'PUBLISH', msgStr });
+        }
+      }
     }
-    return null;
-  } catch (_e) {
-    return null;
+    return events;
+  }
+
+  _processPublishedMessage(msgStr) {
+    let parsed;
+    try {
+      parsed = JSON.parse(msgStr);
+    } catch (_e) {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    if (parsed.s === this.clientId && !parsed.__tnChunk) return;
+
+    if (parsed.__tnChunk) {
+      if (parsed.s === this.clientId) return;
+      const now = Date.now();
+      for (const [k, entry] of this.chunkMap.entries()) {
+        if (now - entry.ts > RELAY_REASSEMBLY_TTL_MS) this.chunkMap.delete(k);
+      }
+      const key = `${parsed.s}:${parsed.__tnChunk}`;
+      const total = Number(parsed.n);
+      const idx = Number(parsed.i);
+      const data = typeof parsed.d === 'string' ? parsed.d : '';
+      if (!Number.isInteger(total) || total < 1 || total > 300 || idx < 0 || idx >= total) return;
+
+      let entry = this.chunkMap.get(key);
+      if (!entry) {
+        entry = { total, parts: new Array(total), received: 0, totalBytes: 0, ts: now };
+        this.chunkMap.set(key, entry);
+      }
+      if (entry.parts[idx] === undefined) {
+        entry.totalBytes += data.length;
+        if (entry.totalBytes > RELAY_MAX_TOTAL_BYTES) {
+          this.chunkMap.delete(key);
+          return;
+        }
+        entry.parts[idx] = data;
+        entry.received += 1;
+        entry.ts = now;
+      }
+      if (entry.received === entry.total) {
+        this.chunkMap.delete(key);
+        try {
+          const fullObj = JSON.parse(entry.parts.join(''));
+          this.onMessage(fullObj);
+        } catch (_e) {
+          // ignore malformed reassembled JSON
+        }
+      }
+      return;
+    }
+
+    this.onMessage(parsed);
+  }
+
+  _connectSingle(endpointUrl, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (this.closed) {
+        reject(new Error('Client closed'));
+        return;
+      }
+      let settled = false;
+      let ws;
+      try {
+        ws = new globalThis.WebSocket(endpointUrl, 'mqtt');
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      ws.binaryType = 'arraybuffer';
+      let localRx = Buffer.alloc(0);
+
+      const finishErr = (msg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch (_e) {}
+        reject(new Error(msg));
+      };
+
+      const timer = setTimeout(() => finishErr(`Timeout connecting to ${endpointUrl}`), timeoutMs);
+
+      ws.addEventListener('open', () => {
+        if (settled || this.closed) {
+          finishErr('Closed before open');
+          return;
+        }
+        try {
+          ws.send(this._buildConnectPacket());
+        } catch (_e) {
+          finishErr('Failed to send MQTT CONNECT');
+        }
+      });
+
+      ws.addEventListener('message', async (ev) => {
+        let buf;
+        if (ev.data instanceof ArrayBuffer) {
+          buf = Buffer.from(ev.data);
+        } else if (Buffer.isBuffer(ev.data)) {
+          buf = ev.data;
+        } else if (ev.data && typeof ev.data.arrayBuffer === 'function') {
+          buf = Buffer.from(await ev.data.arrayBuffer());
+        } else {
+          return;
+        }
+
+        if (this.ws === ws && this.connected) {
+          const evs = this._handleIncomingBytes(buf) || [];
+          for (const item of evs) {
+            if (item.type === 'PUBLISH') this._processPublishedMessage(item.msgStr);
+          }
+          return;
+        }
+
+        if (settled) return;
+        this.rxBuf = localRx;
+        const evs = this._handleIncomingBytes(buf) || [];
+        localRx = this.rxBuf;
+
+        for (const item of evs) {
+          if (item.type === 'CONNACK') {
+            if (item.rc === 0) {
+              try {
+                ws.send(this._buildSubscribePacket());
+              } catch (_e) {
+                finishErr('Failed to send MQTT SUBSCRIBE');
+              }
+            } else {
+              finishErr(`CONNACK error code ${item.rc}`);
+            }
+          } else if (item.type === 'SUBACK' && !settled && !this.closed) {
+            settled = true;
+            clearTimeout(timer);
+            this.ws = ws;
+            this.activeEndpoint = endpointUrl;
+            this.connected = true;
+            this.rxBuf = localRx;
+            this.keepaliveTimer = setInterval(() => {
+              if (this.connected && this.ws && this.ws.readyState === 1) {
+                try {
+                  this.ws.send(Buffer.from([0xc0, 0x00]));
+                } catch (_e) {}
+              }
+            }, 18000);
+            this.onConnected(endpointUrl);
+            resolve(endpointUrl);
+          }
+        }
+      });
+
+      ws.addEventListener('error', () => {
+        if (this.ws !== ws) finishErr(`WebSocket error on ${endpointUrl}`);
+      });
+
+      ws.addEventListener('close', () => {
+        if (this.ws === ws) {
+          const wasConnected = this.connected;
+          this.connected = false;
+          if (this.keepaliveTimer) {
+            clearInterval(this.keepaliveTimer);
+            this.keepaliveTimer = null;
+          }
+          if (wasConnected && !this.closed) {
+            this.onClose();
+          }
+        } else if (!settled) {
+          finishErr(`WebSocket closed before ready on ${endpointUrl}`);
+        }
+      });
+    });
+  }
+
+  async connect(timeoutMs = 5000) {
+    if (typeof globalThis.WebSocket !== 'function') {
+      throw new Error('WebSocket runtime not available');
+    }
+    const perBrokerTimeout = Math.max(1800, Math.min(timeoutMs, 2600));
+    let lastErr = null;
+    for (const endpointUrl of this.endpoints) {
+      if (this.closed) throw new Error('Relay client closed');
+      try {
+        return await this._connectSingle(endpointUrl, perBrokerTimeout);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error('All relay brokers unreachable');
+  }
+
+  publishJson(obj) {
+    if (!this.connected || !this.ws || this.ws.readyState !== 1) return false;
+    try {
+      const payload = { ...obj, s: this.clientId };
+      const json = JSON.stringify(payload);
+      if (json.length <= RELAY_CHUNK_CHARS) {
+        this.ws.send(this._buildPublishPacket(Buffer.from(json, 'utf8')));
+        return true;
+      }
+      const msgId = crypto.randomBytes(6).toString('hex');
+      const total = Math.ceil(json.length / RELAY_CHUNK_CHARS);
+      for (let i = 0; i < total; i++) {
+        const chunkPayload = JSON.stringify({
+          __tnChunk: msgId,
+          s: this.clientId,
+          i,
+          n: total,
+          d: json.slice(i * RELAY_CHUNK_CHARS, (i + 1) * RELAY_CHUNK_CHARS)
+        });
+        this.ws.send(this._buildPublishPacket(Buffer.from(chunkPayload, 'utf8')));
+      }
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  close() {
+    this.closed = true;
+    this.connected = false;
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+    if (this.ws) {
+      try {
+        if (this.ws.readyState === 1) {
+          this.ws.send(Buffer.from([0xe0, 0x00]));
+        }
+        this.ws.close();
+      } catch (_e) {}
+      this.ws = null;
+    }
   }
 }
 
@@ -348,16 +821,21 @@ function sanitizeChatMessage(raw, fallbackAuthor) {
 }
 
 class SharedRoomManager {
-  constructor({ getAppDataDir, sendToRenderer }) {
+  constructor({ getAppDataDir, sendToRenderer, relayEndpoints } = {}) {
     this.getAppDataDir = getAppDataDir;
     this.sendToRenderer = sendToRenderer;
+    this.relayEndpointsOverride = Array.isArray(relayEndpoints) && relayEndpoints.length > 0 ? relayEndpoints : null;
 
     this.storeData = this.loadStore();
     this.authenticatedSession = null; // { account: publicProfile, publicKeyPem, privateKeyPem }
     this.failedLoginState = { count: 0, lockoutUntil: 0 };
-    this.activeSession = null; // { mode: 'host' | 'guest', roomId, roomName, cipherKey, authToken, ... }
+    this.activeSession = null; // { mode: 'host' | 'guest', transport: 'lan' | 'relay', roomId, roomName, cipherKey, authToken, ... }
     this.httpServer = null;
     this.udpSocket = null;
+    this.hostRelayClient = null;
+    this.guestRelayClient = null;
+    this.relayClients = new Map(); // memberUid -> { clientId, profile, lastSeen }
+    this.pendingRelayReplies = new Map(); // reqId -> { resolve, reject, timer }
     this.sseClients = new Map(); // memberUid -> { res, profile, lastSeen }
     this.verifiedSessions = new Map(); // sessionToken -> { profile, issuedAt }
     this.joinNonces = new Map(); // nonce -> { expiresAt }
@@ -449,12 +927,28 @@ class SharedRoomManager {
       .sort((a, b) => (b.lastLoginAt || 0) - (a.lastLoginAt || 0));
   }
 
+  getSavedRoomsList() {
+    return Object.values(this.storeData.hostedRooms || {})
+      .map((room) => ({
+        roomId: room.roomId,
+        roomName: room.roomName,
+        hostProfile: room.hostProfile || null,
+        permissionMode: room.permissionMode || 'all',
+        noteCount: Array.isArray(room.notes) ? room.notes.length : 0,
+        messageCount: Array.isArray(room.messages) ? room.messages.length : 0,
+        createdAt: room.createdAt || 0,
+        updatedAt: room.updatedAt || room.createdAt || 0
+      }))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+
   getPublicState() {
     return {
       currentAccount: this.authenticatedSession ? this.authenticatedSession.account : null,
       registeredAccounts: this.getRegisteredAccountList(),
       lastAccountId: this.storeData.lastAccountId || '',
       recentRooms: this.storeData.recentRooms || [],
+      savedRooms: this.getSavedRoomsList(),
       activeRoom: this.getActiveRoomSnapshot()
     };
   }
@@ -463,14 +957,21 @@ class SharedRoomManager {
     if (!this.activeSession) return null;
     const room = this.activeSession.room;
     if (!room) return null;
+    const relayConnected =
+      this.activeSession.mode === 'host'
+        ? Boolean(this.hostRelayClient && this.hostRelayClient.connected)
+        : Boolean(this.guestRelayClient && this.guestRelayClient.connected);
     return {
       mode: this.activeSession.mode,
+      transport: this.activeSession.transport || 'lan',
+      relayConnected,
       roomId: room.roomId,
       roomName: room.roomName,
       hostProfile: room.hostProfile,
       permissionMode: room.permissionMode || 'all',
       inviteCode: this.activeSession.inviteCode || '',
       localPort: this.activeSession.port || 0,
+      lastSavedAt: this.activeSession.lastSavedAt || room.updatedAt || Date.now(),
       sections: room.sections || DEFAULT_SECTIONS,
       folders: room.folders || DEFAULT_FOLDERS,
       notes: room.notes || [],
@@ -483,15 +984,194 @@ class SharedRoomManager {
     if (!this.activeSession || !this.activeSession.room) return [];
     if (this.activeSession.mode === 'host') {
       const hostProfile = this.activeSession.room.hostProfile;
+      const seen = new Set([hostProfile.uid]);
       const list = [{ ...hostProfile, isHost: true, online: true }];
       for (const [uid, client] of this.sseClients.entries()) {
-        if (uid !== hostProfile.uid) {
+        if (!seen.has(uid)) {
+          seen.add(uid);
           list.push({ ...client.profile, isHost: false, online: true });
+        }
+      }
+      for (const [uid, client] of this.relayClients.entries()) {
+        if (!seen.has(uid)) {
+          seen.add(uid);
+          list.push({ ...client.profile, isHost: false, online: true, viaRelay: true });
         }
       }
       return list;
     }
     return this.activeSession.room.members || [];
+  }
+
+  saveRoomNow() {
+    if (!this.activeSession || !this.activeSession.room) {
+      return { ok: false, error: '저장할 활성 공유 방이 없습니다.' };
+    }
+    const room = this.activeSession.room;
+    const now = Date.now();
+    room.updatedAt = now;
+    if (this.activeSession.mode === 'host') {
+      this.persistHostedRoom(room);
+    } else {
+      // Guest saves a local snapshot copy under recent/imported if desired, or export via backup
+      const existing = this.storeData.hostedRooms[room.roomId];
+      if (!existing) {
+        this.storeData.hostedRooms[room.roomId] = {
+          roomId: room.roomId,
+          roomName: room.roomName,
+          authToken: this.activeSession.authToken,
+          hostProfile: room.hostProfile,
+          permissionMode: room.permissionMode || 'all',
+          sections: room.sections || DEFAULT_SECTIONS,
+          folders: room.folders || DEFAULT_FOLDERS,
+          notes: room.notes || [],
+          messages: room.messages || [],
+          kickedUids: [],
+          createdAt: room.createdAt || now,
+          updatedAt: now
+        };
+      } else {
+        existing.notes = room.notes || [];
+        existing.messages = room.messages || [];
+        existing.sections = room.sections || DEFAULT_SECTIONS;
+        existing.folders = room.folders || DEFAULT_FOLDERS;
+        existing.updatedAt = now;
+      }
+      this.saveStore();
+    }
+    this.activeSession.lastSavedAt = now;
+    this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
+    return { ok: true, savedAt: now, room: this.getActiveRoomSnapshot(), state: this.getPublicState() };
+  }
+
+  exportHostedRoomBackup(roomId) {
+    const targetId = String(roomId || this.activeSession?.roomId || '').trim();
+    const room =
+      (this.activeSession && this.activeSession.roomId === targetId && this.activeSession.room) ||
+      this.storeData.hostedRooms[targetId];
+    if (!room) {
+      return { ok: false, error: '내보낼 공유 방 데이터를 찾을 수 없습니다.' };
+    }
+    return {
+      ok: true,
+      suggestedFilename: `${String(room.roomName || 'treenote-room').replace(/[\\/:*?"<>|]/g, '_')}-backup.json`,
+      backup: {
+        app: 'TreeNote',
+        version: 1,
+        exportedAt: Date.now(),
+        room: {
+          roomId: room.roomId,
+          roomName: room.roomName,
+          hostProfile: room.hostProfile || null,
+          permissionMode: room.permissionMode || 'all',
+          sections: Array.isArray(room.sections) ? room.sections : DEFAULT_SECTIONS,
+          folders: Array.isArray(room.folders) ? room.folders : DEFAULT_FOLDERS,
+          notes: Array.isArray(room.notes) ? room.notes : [],
+          messages: Array.isArray(room.messages) ? room.messages : [],
+          createdAt: room.createdAt || Date.now(),
+          updatedAt: room.updatedAt || Date.now()
+        }
+      }
+    };
+  }
+
+  importHostedRoomBackup({ backupData, roomName, password } = {}) {
+    const authSess = this.authenticatedSession;
+    const account = authSess?.account;
+    if (!account) {
+      return { ok: false, error: '방 백업을 불러오려면 먼저 계정으로 로그인해 주세요.' };
+    }
+    const rawRoom = backupData?.room;
+    if (!rawRoom || typeof rawRoom !== 'object') {
+      return { ok: false, error: '올바른 나무 노트 공유 방 백업 파일이 아닙니다.' };
+    }
+    const cleanName = String(roomName || rawRoom.roomName || '').trim().slice(0, 60);
+    const cleanPwd = String(password || '').trim();
+    if (cleanName.length < 2) {
+      return { ok: false, error: '방 이름은 2자 이상이어야 합니다.' };
+    }
+    if (cleanPwd.length < 2) {
+      return { ok: false, error: '복원할 방의 입장 비밀번호(2자 이상)를 설정해 주세요.' };
+    }
+
+    const roomId = deriveRoomId(cleanName);
+    const { authToken } = deriveRoomSecrets(cleanName, cleanPwd);
+    const now = Date.now();
+    const sections =
+      Array.isArray(rawRoom.sections) && rawRoom.sections.length > 0
+        ? rawRoom.sections
+            .slice(0, 12)
+            .map((s) => ({
+              id: String(s.id || `sec-${Date.now()}`).slice(0, 40),
+              title: String(s.title || '섹션').slice(0, 32),
+              color: ['blue', 'amber', 'purple', 'emerald', 'zinc', 'rose'].includes(s.color)
+                ? s.color
+                : 'blue'
+            }))
+        : DEFAULT_SECTIONS;
+
+    const folders =
+      Array.isArray(rawRoom.folders) && rawRoom.folders.length > 0
+        ? rawRoom.folders.slice(0, 20).map((f) => ({
+            id: String(f.id || `fld-${Date.now()}`).slice(0, 40),
+            name: String(f.name || '폴더').slice(0, 32),
+            icon: String(f.icon || '📁').slice(0, 4)
+          }))
+        : DEFAULT_FOLDERS;
+
+    const notes = Array.isArray(rawRoom.notes)
+      ? rawRoom.notes.slice(0, MAX_SHARED_NOTES).map((n) => sanitizeSharedNote(n, account)).filter(Boolean)
+      : [];
+    const messages = Array.isArray(rawRoom.messages)
+      ? rawRoom.messages
+          .slice(-MAX_CHAT_MESSAGES)
+          .map((m) => sanitizeChatMessage(m, account))
+          .filter(Boolean)
+      : [];
+
+    const restoredRoom = {
+      roomId,
+      roomName: cleanName,
+      authToken,
+      hostProfile: account,
+      permissionMode: ['all', 'host-delete', 'readonly'].includes(rawRoom.permissionMode)
+        ? rawRoom.permissionMode
+        : 'all',
+      sections,
+      folders,
+      notes,
+      messages,
+      kickedUids: [],
+      createdAt: typeof rawRoom.createdAt === 'number' ? rawRoom.createdAt : now,
+      updatedAt: now
+    };
+
+    this.storeData.hostedRooms[roomId] = restoredRoom;
+    this.recordRecentRoom({
+      roomId,
+      roomName: cleanName,
+      isHost: true,
+      hostCode: ''
+    });
+    this.saveStore();
+    return { ok: true, roomId, roomName: cleanName, state: this.getPublicState() };
+  }
+
+  async deleteSavedRoom(roomId) {
+    const targetId = String(roomId || '').trim();
+    if (!targetId) return { ok: false, error: '삭제할 방 ID가 없습니다.' };
+
+    if (this.activeSession && this.activeSession.roomId === targetId) {
+      await this.leaveCurrentRoom();
+    }
+    if (this.storeData.hostedRooms && this.storeData.hostedRooms[targetId]) {
+      delete this.storeData.hostedRooms[targetId];
+    }
+    this.storeData.recentRooms = (this.storeData.recentRooms || []).filter(
+      (r) => r.roomId !== targetId
+    );
+    this.saveStore();
+    return { ok: true, state: this.getPublicState() };
   }
 
   // ============================================================================
@@ -888,14 +1568,19 @@ class SharedRoomManager {
 
     this.activeSession = {
       mode: 'host',
+      transport: 'hybrid',
       roomId,
       roomName: cleanName,
       cipherKey,
       authToken,
       port: serverInfo.port,
       inviteCode: serverInfo.inviteCode,
+      lastSavedAt: room.updatedAt || Date.now(),
       room
     };
+
+    // Start End-to-End Encrypted Relay so guests on different networks/firewalls can join with Room Name + Password
+    await this.startHostRelay(room, cipherKey);
 
     this.recordRecentRoom({
       roomId,
@@ -923,8 +1608,178 @@ class SharedRoomManager {
     this.storeData.recentRooms = filtered.slice(0, 15);
   }
 
+  async startHostRelay(room, cipherKey) {
+    if (this.hostRelayClient) {
+      this.hostRelayClient.close();
+      this.hostRelayClient = null;
+    }
+    const topic = deriveRelayTopic(room.roomId, room.authToken);
+
+    const launchClient = () => {
+      const client = new MqttWsRelayClient({
+        topic,
+        endpoints: this.relayEndpointsOverride,
+        onConnected: () => {
+          if (this.activeSession?.mode === 'host' && this.activeSession.roomId === room.roomId) {
+            this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
+          }
+        },
+        onClose: () => {
+          if (this.activeSession?.mode === 'host' && this.activeSession.roomId === room.roomId) {
+            setTimeout(() => {
+              if (
+                this.activeSession?.mode === 'host' &&
+                this.activeSession.roomId === room.roomId &&
+                (!this.hostRelayClient || !this.hostRelayClient.connected)
+              ) {
+                this.startHostRelay(room, cipherKey).catch(() => {});
+              }
+            }, 3000);
+          }
+        },
+        onMessage: (msg) => {
+          this.handleHostRelayMessage(msg, room, cipherKey, client);
+        }
+      });
+      this.hostRelayClient = client;
+      return client;
+    };
+
+    const client = launchClient();
+    try {
+      await Promise.race([
+        client.connect(4500),
+        new Promise((resolve) => setTimeout(resolve, 2500))
+      ]);
+    } catch (_e) {
+      // Offline / broker unreachable; LAN hosting continues normally
+    }
+  }
+
+  handleHostRelayMessage(msg, room, cipherKey, relayClient) {
+    if (!msg || typeof msg !== 'object') return;
+    if (!this.activeSession || this.activeSession.mode !== 'host' || this.activeSession.roomId !== room.roomId) {
+      return;
+    }
+
+    const remoteKey = `relay:${String(msg.s || 'anon').slice(0, 32)}`;
+
+    if (msg.op === 'PING') {
+      relayClient.publishJson({
+        op: 'PONG',
+        reqId: msg.reqId,
+        roomId: room.roomId,
+        roomName: room.roomName
+      });
+      return;
+    }
+
+    if (msg.op === 'CHALLENGE') {
+      const nonce = this.issueJoinNonce();
+      relayClient.publishJson({
+        op: 'CHALLENGE_RES',
+        reqId: msg.reqId,
+        ok: true,
+        nonce,
+        roomId: room.roomId
+      });
+      return;
+    }
+
+    if (msg.op === 'JOIN') {
+      const result = this.processGuestJoinRequest({
+        room,
+        cipherKey,
+        remoteKey,
+        body: msg,
+        viaRelayClientId: String(msg.s || '')
+      });
+      relayClient.publishJson({
+        op: 'JOIN_RES',
+        reqId: msg.reqId,
+        ...result
+      });
+      if (result.ok) {
+        this.broadcastRoomUpdate();
+      }
+      return;
+    }
+
+    if (msg.op === 'ACTION') {
+      const rate = this.checkJoinRateLimit(remoteKey);
+      if (!rate.allowed) {
+        relayClient.publishJson({
+          op: 'ACTION_RES',
+          reqId: msg.reqId,
+          res: { ok: false, error: rate.error }
+        });
+        return;
+      }
+      if (!safeTimingEqualHex(msg.authToken || '', room.authToken)) {
+        this.recordJoinAttempt(remoteKey, false);
+        relayClient.publishJson({
+          op: 'ACTION_RES',
+          reqId: msg.reqId,
+          res: { ok: false, error: '인증 실패' }
+        });
+        return;
+      }
+      const verified = this.verifiedSessions.get(String(msg.sessionToken || ''));
+      if (!verified || !verified.profile) {
+        this.recordJoinAttempt(remoteKey, false);
+        relayClient.publishJson({
+          op: 'ACTION_RES',
+          reqId: msg.reqId,
+          res: { ok: false, error: '유효하지 않거나 만료된 멤버 세션입니다.' }
+        });
+        return;
+      }
+      const actor = verified.profile;
+      try {
+        const actionPayload = decryptPayload(msg.envelope, cipherKey);
+        this.recordJoinAttempt(remoteKey, true);
+        if ((room.kickedUids || []).includes(actor.uid)) {
+          this.verifiedSessions.delete(String(msg.sessionToken || ''));
+          relayClient.publishJson({
+            op: 'ACTION_RES',
+            reqId: msg.reqId,
+            res: { ok: false, error: '강퇴된 사용자입니다.' }
+          });
+          return;
+        }
+        const existingRelay = this.relayClients.get(actor.uid);
+        if (existingRelay) existingRelay.lastSeen = Date.now();
+        const res = this.applyRoomActionInternal(room, actionPayload.action, actor, false);
+        relayClient.publishJson({
+          op: 'ACTION_RES',
+          reqId: msg.reqId,
+          res
+        });
+      } catch (err) {
+        this.recordJoinAttempt(remoteKey, false);
+        relayClient.publishJson({
+          op: 'ACTION_RES',
+          reqId: msg.reqId,
+          res: { ok: false, error: err.message }
+        });
+      }
+      return;
+    }
+
+    if (msg.op === 'LEAVE') {
+      const sessionToken = String(msg.sessionToken || '');
+      const verified = this.verifiedSessions.get(sessionToken);
+      if (verified && verified.profile) {
+        this.verifiedSessions.delete(sessionToken);
+        this.relayClients.delete(verified.profile.uid);
+        this.broadcastRoomUpdate();
+      }
+    }
+  }
+
   async startHostNetworkServer(room, cipherKey) {
     this.sseClients.clear();
+    this.relayClients.clear();
     this.verifiedSessions.clear();
     this.joinNonces.clear();
 
@@ -948,10 +1803,12 @@ class SharedRoomManager {
     });
 
     this.httpServer = server;
-    const lanIp = getLocalLanIp();
-    const inviteCode = encodeInviteCode(lanIp, port);
+    const lanInterfaces = getAllLanInterfaces();
+    const endpointList = lanInterfaces.map((iface) => ({ host: iface.address, port }));
+    if (endpointList.length === 0) endpointList.push({ host: '127.0.0.1', port });
+    const inviteCode = encodeInviteCode(endpointList);
 
-    // Start UDP LAN Auto-Discovery responder so guests only need Room Name + Password
+    // Start UDP LAN Auto-Discovery responder so guests on the same LAN only need Room Name + Password
     try {
       const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       udp.on('message', (msg, rinfo) => {
@@ -1035,6 +1892,153 @@ class SharedRoomManager {
     this.failedJoinMap.set(remoteIp, entry);
   }
 
+  issueJoinNonce() {
+    const now = Date.now();
+    for (const [k, v] of this.joinNonces.entries()) {
+      if (v.expiresAt <= now) this.joinNonces.delete(k);
+    }
+    if (this.joinNonces.size >= 100) {
+      const oldestKey = this.joinNonces.keys().next().value;
+      if (oldestKey) this.joinNonces.delete(oldestKey);
+    }
+    const nonce = crypto.randomBytes(32).toString('hex');
+    this.joinNonces.set(nonce, { expiresAt: now + 60 * 1000 });
+    return nonce;
+  }
+
+  processGuestJoinRequest({ room, cipherKey, remoteKey, body, viaRelayClientId = '' }) {
+    const rate = this.checkJoinRateLimit(remoteKey);
+    if (!rate.allowed) {
+      return { status: 429, ok: false, error: rate.error };
+    }
+
+    try {
+      if (!body || body.roomId !== room.roomId || !safeTimingEqualHex(body.authToken, room.authToken)) {
+        this.recordJoinAttempt(remoteKey, false);
+        return {
+          status: 403,
+          ok: false,
+          error: '방 이름 또는 비밀번호가 일치하지 않습니다.'
+        };
+      }
+
+      const decrypted = decryptPayload(body.envelope, cipherKey);
+      const guestProfile = sanitizeAuthor(decrypted.profile);
+      const publicKeyPem = typeof decrypted.publicKeyPem === 'string' ? decrypted.publicKeyPem : '';
+      const nonce = typeof decrypted.nonce === 'string' ? decrypted.nonce : '';
+      const signature = typeof decrypted.signature === 'string' ? decrypted.signature : '';
+
+      const nonceEntry = this.joinNonces.get(nonce);
+      this.joinNonces.delete(nonce);
+      if (!nonceEntry || nonceEntry.expiresAt <= Date.now()) {
+        this.recordJoinAttempt(remoteKey, false);
+        return {
+          status: 403,
+          ok: false,
+          error: '인증 챌린지가 만료되었거나 유효하지 않습니다.'
+        };
+      }
+
+      let signatureVerified = false;
+      try {
+        const expectedFp = computePublicKeyFingerprint(publicKeyPem);
+        const expectedUid = `acct:${guestProfile.accountId}:${expectedFp}`;
+        if (
+          guestProfile.accountId &&
+          guestProfile.uid === expectedUid &&
+          signature &&
+          publicKeyPem
+        ) {
+          const signMsg = Buffer.from(
+            `${room.roomId}:${room.authToken}:${nonce}:${guestProfile.uid}`,
+            'utf8'
+          );
+          signatureVerified = crypto.verify(
+            null,
+            signMsg,
+            publicKeyPem,
+            Buffer.from(signature, 'base64')
+          );
+        }
+      } catch (_sigErr) {
+        signatureVerified = false;
+      }
+
+      if (!signatureVerified) {
+        this.recordJoinAttempt(remoteKey, false);
+        return {
+          status: 403,
+          ok: false,
+          error: '계정 전자서명 검증에 실패했습니다.'
+        };
+      }
+
+      if ((room.kickedUids || []).includes(guestProfile.uid)) {
+        return {
+          status: 403,
+          ok: false,
+          error: '호스트에 의해 입장이 제한된 계정입니다.'
+        };
+      }
+
+      this.recordJoinAttempt(remoteKey, true);
+
+      const memberSessionToken = crypto.randomBytes(32).toString('hex');
+      this.verifiedSessions.set(memberSessionToken, {
+        profile: guestProfile,
+        issuedAt: Date.now()
+      });
+
+      if (viaRelayClientId) {
+        this.relayClients.set(guestProfile.uid, {
+          clientId: viaRelayClientId,
+          profile: guestProfile,
+          lastSeen: Date.now()
+        });
+      }
+
+      const joinSysMsg = {
+        id: crypto.randomUUID(),
+        text: `${guestProfile.name} (@${guestProfile.accountId})님이 방에 입장했습니다.`,
+        imageDataUrl: '',
+        sharedNoteRef: null,
+        author: guestProfile,
+        createdAt: Date.now(),
+        isSystem: true,
+        pinnedToNoteId: ''
+      };
+      room.messages = [...(room.messages || []), joinSysMsg].slice(-MAX_CHAT_MESSAGES);
+      this.persistHostedRoom(room);
+
+      const responseEnvelope = encryptPayload(
+        {
+          memberSessionToken,
+          room: {
+            roomId: room.roomId,
+            roomName: room.roomName,
+            hostProfile: room.hostProfile,
+            permissionMode: room.permissionMode,
+            sections: room.sections,
+            folders: room.folders,
+            notes: room.notes,
+            messages: room.messages,
+            members: this.getActiveMembersList()
+          }
+        },
+        cipherKey
+      );
+
+      return { status: 200, ok: true, envelope: responseEnvelope };
+    } catch (_err) {
+      this.recordJoinAttempt(remoteKey, false);
+      return {
+        status: 400,
+        ok: false,
+        error: '암호화 검증에 실패했습니다.'
+      };
+    }
+  }
+
   async handleHostHttpRequest(req, res, room, cipherKey) {
     const remoteIp = req.socket.remoteAddress || 'unknown';
     const reqUrl = new URL(req.url, 'http://127.0.0.1');
@@ -1054,16 +2058,7 @@ class SharedRoomManager {
 
     // 0) GET /api/challenge (Single-use nonce for Ed25519 identity verification)
     if (req.method === 'GET' && reqUrl.pathname === '/api/challenge') {
-      const now = Date.now();
-      for (const [k, v] of this.joinNonces.entries()) {
-        if (v.expiresAt <= now) this.joinNonces.delete(k);
-      }
-      if (this.joinNonces.size >= 100) {
-        const oldestKey = this.joinNonces.keys().next().value;
-        if (oldestKey) this.joinNonces.delete(oldestKey);
-      }
-      const nonce = crypto.randomBytes(32).toString('hex');
-      this.joinNonces.set(nonce, { expiresAt: now + 60 * 1000 });
+      const nonce = this.issueJoinNonce();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, nonce, roomId: room.roomId }));
       return;
@@ -1071,124 +2066,23 @@ class SharedRoomManager {
 
     // 1) POST /api/join
     if (req.method === 'POST' && reqUrl.pathname === '/api/join') {
-      const rate = this.checkJoinRateLimit(remoteIp);
-      if (!rate.allowed) {
-        res.writeHead(429, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: rate.error }));
-        return;
-      }
-
       try {
         const body = await this.readJsonBody(req);
-        if (body.roomId !== room.roomId || !safeTimingEqualHex(body.authToken, room.authToken)) {
-          this.recordJoinAttempt(remoteIp, false);
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              error: '방 이름 또는 비밀번호가 일치하지 않습니다.'
-            })
-          );
-          return;
-        }
-
-        const decrypted = decryptPayload(body.envelope, cipherKey);
-        const guestProfile = sanitizeAuthor(decrypted.profile);
-        const publicKeyPem = typeof decrypted.publicKeyPem === 'string' ? decrypted.publicKeyPem : '';
-        const nonce = typeof decrypted.nonce === 'string' ? decrypted.nonce : '';
-        const signature = typeof decrypted.signature === 'string' ? decrypted.signature : '';
-
-        // Single-use nonce & Ed25519 signature verification to prevent impersonation
-        const nonceEntry = this.joinNonces.get(nonce);
-        this.joinNonces.delete(nonce);
-        if (!nonceEntry || nonceEntry.expiresAt <= Date.now()) {
-          this.recordJoinAttempt(remoteIp, false);
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '인증 챌린지가 만료되었거나 유효하지 않습니다.' }));
-          return;
-        }
-
-        let signatureVerified = false;
-        try {
-          const expectedFp = computePublicKeyFingerprint(publicKeyPem);
-          const expectedUid = `acct:${guestProfile.accountId}:${expectedFp}`;
-          if (
-            guestProfile.accountId &&
-            guestProfile.uid === expectedUid &&
-            signature &&
-            publicKeyPem
-          ) {
-            const signMsg = Buffer.from(
-              `${room.roomId}:${room.authToken}:${nonce}:${guestProfile.uid}`,
-              'utf8'
-            );
-            signatureVerified = crypto.verify(
-              null,
-              signMsg,
-              publicKeyPem,
-              Buffer.from(signature, 'base64')
-            );
-          }
-        } catch (_sigErr) {
-          signatureVerified = false;
-        }
-
-        if (!signatureVerified) {
-          this.recordJoinAttempt(remoteIp, false);
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '계정 전자서명 검증에 실패했습니다.' }));
-          return;
-        }
-
-        if ((room.kickedUids || []).includes(guestProfile.uid)) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '호스트에 의해 입장이 제한된 계정입니다.' }));
-          return;
-        }
-
-        this.recordJoinAttempt(remoteIp, true);
-
-        const memberSessionToken = crypto.randomBytes(32).toString('hex');
-        this.verifiedSessions.set(memberSessionToken, {
-          profile: guestProfile,
-          issuedAt: Date.now()
+        const result = this.processGuestJoinRequest({
+          room,
+          cipherKey,
+          remoteKey: remoteIp,
+          body
         });
-
-        const joinSysMsg = {
-          id: crypto.randomUUID(),
-          text: `${guestProfile.name} (@${guestProfile.accountId})님이 방에 입장했습니다.`,
-          imageDataUrl: '',
-          sharedNoteRef: null,
-          author: guestProfile,
-          createdAt: Date.now(),
-          isSystem: true,
-          pinnedToNoteId: ''
-        };
-        room.messages = [...(room.messages || []), joinSysMsg].slice(-MAX_CHAT_MESSAGES);
-        this.persistHostedRoom(room);
-
-        const responseEnvelope = encryptPayload(
-          {
-            memberSessionToken,
-            room: {
-              roomId: room.roomId,
-              roomName: room.roomName,
-              hostProfile: room.hostProfile,
-              permissionMode: room.permissionMode,
-              sections: room.sections,
-              folders: room.folders,
-              notes: room.notes,
-              messages: room.messages,
-              members: this.getActiveMembersList()
-            }
-          },
-          cipherKey
+        res.writeHead(result.status || (result.ok ? 200 : 400), { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify(
+            result.ok ? { ok: true, envelope: result.envelope } : { ok: false, error: result.error }
+          )
         );
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, envelope: responseEnvelope }));
-
-        this.broadcastRoomUpdate();
+        if (result.ok) {
+          this.broadcastRoomUpdate();
+        }
       } catch (_err) {
         this.recordJoinAttempt(remoteIp, false);
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1323,7 +2217,7 @@ class SharedRoomManager {
     // Update host's own UI immediately
     this.sendToRenderer('shared:room-updated', snapshot);
 
-    // Broadcast encrypted state to all connected guests
+    // Broadcast encrypted state to all connected guests (LAN SSE + Online Relay)
     const envelope = encryptPayload(
       {
         type: 'ROOM_STATE',
@@ -1349,18 +2243,24 @@ class SharedRoomManager {
         // ignore disconnected socket
       }
     }
+    if (this.hostRelayClient && this.hostRelayClient.connected) {
+      this.hostRelayClient.publishJson({ op: 'ROOM_STATE', envelope });
+    }
   }
 
   persistHostedRoom(room) {
     if (!room || !room.roomId) return;
     this.storeData.hostedRooms[room.roomId] = room;
+    if (this.activeSession && this.activeSession.roomId === room.roomId) {
+      this.activeSession.lastSavedAt = Date.now();
+    }
     this.saveStore();
   }
 
   // ============================================================================
   // 3. Join an Existing Shared Room (방 이름 + 비밀번호로 참가하기)
   // ============================================================================
-  async joinRoom({ roomName, password, hostCode }) {
+  async joinRoom({ roomName, password, hostCode, forceRelay = false }) {
     const authSess = this.authenticatedSession;
     const account = authSess?.account;
     if (!account || !authSess?.privateKeyPem || !authSess?.publicKeyPem) {
@@ -1378,11 +2278,106 @@ class SharedRoomManager {
 
     await this.leaveCurrentRoom();
 
-    // 1) Find active host on network (Invite Code -> Localhost Ports -> UDP LAN Broadcast)
-    const endpoint = await this.locateActiveRoomHost(roomId, hostCode);
+    // 1) Try LAN / Direct Invite Code / Localhost discovery first (skipped if forceRelay)
+    const endpoint = forceRelay ? null : await this.locateActiveRoomHost(roomId, hostCode);
 
-    if (!endpoint) {
-      // Check if this room exists locally on this PC (previously hosted on this PC)
+    if (endpoint) {
+      try {
+        const challengeRes = await this.httpGetJson(
+          `http://${endpoint.host}:${endpoint.port}/api/challenge`
+        );
+        if (!challengeRes?.ok || !challengeRes.nonce) {
+          return { ok: false, error: '호스트 인증 챌린지를 받아오지 못했습니다.' };
+        }
+
+        const signMsg = Buffer.from(
+          `${roomId}:${authToken}:${challengeRes.nonce}:${account.uid}`,
+          'utf8'
+        );
+        const signature = crypto
+          .sign(null, signMsg, authSess.privateKeyPem)
+          .toString('base64');
+
+        const joinEnvelope = encryptPayload(
+          {
+            profile: account,
+            publicKeyPem: authSess.publicKeyPem,
+            nonce: challengeRes.nonce,
+            signature
+          },
+          cipherKey
+        );
+        const joinRes = await this.httpPostJson(
+          `http://${endpoint.host}:${endpoint.port}/api/join`,
+          {
+            roomId,
+            authToken,
+            envelope: joinEnvelope
+          }
+        );
+
+        if (!joinRes || !joinRes.ok) {
+          return {
+            ok: false,
+            error: joinRes?.error || '방 이름 또는 비밀번호가 일치하지 않습니다.'
+          };
+        }
+
+        const decrypted = decryptPayload(joinRes.envelope, cipherKey);
+        const roomData = decrypted.room;
+        const memberSessionToken = decrypted.memberSessionToken;
+
+        const inviteCode = encodeInviteCode(endpoint.host, endpoint.port);
+        this.activeSession = {
+          mode: 'guest',
+          transport: 'lan',
+          roomId,
+          roomName: roomData.roomName,
+          cipherKey,
+          authToken,
+          memberSessionToken,
+          hostEndpoint: endpoint,
+          inviteCode,
+          lastSavedAt: Date.now(),
+          room: roomData
+        };
+
+        this.recordRecentRoom({
+          roomId,
+          roomName: roomData.roomName,
+          isHost: false,
+          hostCode: inviteCode
+        });
+        this.saveStore();
+
+        this.connectGuestEventStream(endpoint, authToken, cipherKey, memberSessionToken);
+
+        return {
+          ok: true,
+          room: this.getActiveRoomSnapshot()
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `방 연결 중 오류가 발생했습니다: ${err.message}`
+        };
+      }
+    }
+
+    // 2) Fallback / Cross-network discovery via End-to-End Encrypted Relay
+    const relayResult = await this.joinRoomViaRelay({
+      roomId,
+      roomName: cleanName,
+      authToken,
+      cipherKey,
+      authSess
+    });
+    if (relayResult.ok || relayResult.definiteAuthError) {
+      return relayResult.ok ? { ok: true, room: relayResult.room } : { ok: false, error: relayResult.error };
+    }
+
+    // 3) Resume locally persisted room if this PC previously hosted it and no active host was found
+    if (!forceRelay) {
       const localHosted = this.storeData.hostedRooms[roomId];
       if (localHosted && safeTimingEqualHex(localHosted.authToken, authToken)) {
         return await this.hostRoom({
@@ -1391,20 +2386,122 @@ class SharedRoomManager {
           permissionMode: localHosted.permissionMode
         });
       }
-      return {
-        ok: false,
-        error:
-          '현재 열려 있는 해당 이름의 방을 찾을 수 없습니다. 호스트가 방을 열었는지 확인하거나 초대 코드를 입력해 주세요.'
-      };
     }
 
-    // 2) Perform challenge-response + encrypted handshake with Host
+    return {
+      ok: false,
+      error:
+        '현재 열려 있는 해당 이름의 방을 찾을 수 없습니다. 호스트가 방을 열고 온라인 상태인지, 방 이름·비밀번호가 정확한지 확인해 주세요.'
+    };
+  }
+
+  sendRelayRequest(relayClient, opPayload, expectedOp, timeoutMs = 4000) {
+    const reqId = crypto.randomBytes(8).toString('hex');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRelayReplies.delete(reqId);
+        reject(new Error('요청 응답 시간이 초과되었습니다.'));
+      }, timeoutMs);
+      this.pendingRelayReplies.set(reqId, {
+        expectedOp,
+        resolve: (msg) => {
+          clearTimeout(timer);
+          this.pendingRelayReplies.delete(reqId);
+          resolve(msg);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          this.pendingRelayReplies.delete(reqId);
+          reject(err);
+        },
+        timer
+      });
+      const ok = relayClient.publishJson({ ...opPayload, reqId });
+      if (!ok) {
+        clearTimeout(timer);
+        this.pendingRelayReplies.delete(reqId);
+        reject(new Error('온라인 중계 서버에 연결되어 있지 않습니다.'));
+      }
+    });
+  }
+
+  async joinRoomViaRelay({ roomId, roomName, authToken, cipherKey, authSess }) {
+    const account = authSess.account;
+    const topic = deriveRelayTopic(roomId, authToken);
+
+    const relayClient = new MqttWsRelayClient({
+      topic,
+      endpoints: this.relayEndpointsOverride,
+      onMessage: (msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.reqId && this.pendingRelayReplies.has(msg.reqId)) {
+          const waiter = this.pendingRelayReplies.get(msg.reqId);
+          if (!waiter.expectedOp || waiter.expectedOp === msg.op) {
+            waiter.resolve(msg);
+            return;
+          }
+        }
+        if (
+          msg.op === 'ROOM_STATE' &&
+          this.activeSession?.mode === 'guest' &&
+          this.activeSession?.roomId === roomId
+        ) {
+          try {
+            const payload = decryptPayload(msg.envelope, cipherKey);
+            if (payload.type === 'ROOM_STATE' && payload.room) {
+              this.activeSession.room = payload.room;
+              this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
+            }
+          } catch (_e) {
+            // ignore corrupted relay state frame
+          }
+        } else if (
+          msg.op === 'KICKED' &&
+          this.activeSession?.mode === 'guest' &&
+          this.activeSession?.roomId === roomId
+        ) {
+          try {
+            const payload = decryptPayload(msg.envelope, cipherKey);
+            if (!payload.targetUid || payload.targetUid === account.uid) {
+              this.leaveCurrentRoom();
+              this.sendToRenderer('shared:room-disconnected', { reason: '호스트에 의해 방에서 내보내졌습니다.' });
+            }
+          } catch (_e) {
+            // ignore
+          }
+        } else if (
+          msg.op === 'HOST_CLOSED' &&
+          this.activeSession?.mode === 'guest' &&
+          this.activeSession?.roomId === roomId
+        ) {
+          this.leaveCurrentRoom();
+          this.sendToRenderer('shared:room-disconnected', { reason: '호스트가 공유 방을 종료했습니다.' });
+        }
+      },
+      onClose: () => {
+        if (this.activeSession?.mode === 'guest' && this.activeSession?.roomId === roomId) {
+          this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
+        }
+      }
+    });
+
     try {
-      const challengeRes = await this.httpGetJson(
-        `http://${endpoint.host}:${endpoint.port}/api/challenge`
+      await relayClient.connect(4500);
+    } catch (err) {
+      relayClient.close();
+      return { ok: false, definiteAuthError: false, error: err.message };
+    }
+
+    try {
+      const challengeRes = await this.sendRelayRequest(
+        relayClient,
+        { op: 'CHALLENGE', roomId },
+        'CHALLENGE_RES',
+        3500
       );
       if (!challengeRes?.ok || !challengeRes.nonce) {
-        return { ok: false, error: '호스트 인증 챌린지를 받아오지 못했습니다.' };
+        relayClient.close();
+        return { ok: false, definiteAuthError: false, error: '인증 챌린지를 받아오지 못했습니다.' };
       }
 
       const signMsg = Buffer.from(
@@ -1424,18 +2521,19 @@ class SharedRoomManager {
         },
         cipherKey
       );
-      const joinRes = await this.httpPostJson(
-        `http://${endpoint.host}:${endpoint.port}/api/join`,
-        {
-          roomId,
-          authToken,
-          envelope: joinEnvelope
-        }
+
+      const joinRes = await this.sendRelayRequest(
+        relayClient,
+        { op: 'JOIN', roomId, authToken, envelope: joinEnvelope },
+        'JOIN_RES',
+        4500
       );
 
       if (!joinRes || !joinRes.ok) {
+        relayClient.close();
         return {
           ok: false,
+          definiteAuthError: true,
           error: joinRes?.error || '방 이름 또는 비밀번호가 일치하지 않습니다.'
         };
       }
@@ -1444,47 +2542,45 @@ class SharedRoomManager {
       const roomData = decrypted.room;
       const memberSessionToken = decrypted.memberSessionToken;
 
-      const inviteCode = encodeInviteCode(endpoint.host, endpoint.port);
+      this.guestRelayClient = relayClient;
       this.activeSession = {
         mode: 'guest',
+        transport: 'relay',
         roomId,
-        roomName: roomData.roomName,
+        roomName: roomData.roomName || roomName,
         cipherKey,
         authToken,
         memberSessionToken,
-        hostEndpoint: endpoint,
-        inviteCode,
+        hostEndpoint: null,
+        inviteCode: '',
+        lastSavedAt: Date.now(),
         room: roomData
       };
 
       this.recordRecentRoom({
         roomId,
-        roomName: roomData.roomName,
+        roomName: roomData.roomName || roomName,
         isHost: false,
-        hostCode: inviteCode
+        hostCode: ''
       });
       this.saveStore();
-
-      this.connectGuestEventStream(endpoint, authToken, cipherKey, memberSessionToken);
 
       return {
         ok: true,
         room: this.getActiveRoomSnapshot()
       };
     } catch (err) {
-      return {
-        ok: false,
-        error: `방 연결 중 오류가 발생했습니다: ${err.message}`
-      };
+      relayClient.close();
+      return { ok: false, definiteAuthError: false, error: err.message };
     }
   }
 
   async locateActiveRoomHost(roomId, hostCode) {
-    // 1. If user supplied an explicit invite code or IP:Port
-    const decoded = decodeInviteCode(hostCode);
-    if (decoded) {
-      const ok = await this.pingHostCandidate(decoded.host, decoded.port, roomId);
-      if (ok) return decoded;
+    // 1. If user supplied an explicit invite code, IP:Port, or pasted invite block
+    const decodedList = decodeInviteCode(hostCode);
+    for (const candidate of decodedList) {
+      const ok = await this.pingHostCandidate(candidate.host, candidate.port, roomId);
+      if (ok) return candidate;
     }
 
     // 2. Probe localhost ports (for testing/using across instances on same PC)
@@ -1493,7 +2589,13 @@ class SharedRoomManager {
       if (ok) return { host: '127.0.0.1', port };
     }
 
-    // 3. Broadcast UDP discovery packet on LAN
+    // 3. Broadcast UDP discovery packet on LAN + directed subnet broadcasts
+    const lanIfaces = getAllLanInterfaces();
+    const broadcastTargets = new Set(['255.255.255.255', '127.0.0.1']);
+    for (const iface of lanIfaces) {
+      if (iface.broadcast) broadcastTargets.add(iface.broadcast);
+    }
+
     const discovered = await new Promise((resolve) => {
       let settled = false;
       const client = dgram.createSocket('udp4');
@@ -1529,8 +2631,11 @@ class SharedRoomManager {
             JSON.stringify({ type: 'TREENOTE_DISCOVER', roomId }),
             'utf8'
           );
-          client.send(packet, DISCOVERY_PORT, '255.255.255.255');
-          client.send(packet, DISCOVERY_PORT, '127.0.0.1');
+          for (const target of broadcastTargets) {
+            try {
+              client.send(packet, DISCOVERY_PORT, target);
+            } catch (_sendErr) {}
+          }
         } catch (_e) {
           // ignore
         }
@@ -1545,7 +2650,7 @@ class SharedRoomManager {
           }
           resolve(null);
         }
-      }, 900);
+      }, 850);
     });
 
     return discovered;
@@ -1769,10 +2874,27 @@ class SharedRoomManager {
       return { ...res, room: this.getActiveRoomSnapshot() };
     }
 
-    // Guest sends encrypted action to Host (session verified server-side via memberSessionToken)
+    // Guest sends encrypted action to Host (LAN HTTP or E2EE Relay; session verified server-side via memberSessionToken)
     try {
-      const { hostEndpoint, authToken, cipherKey, memberSessionToken } = this.activeSession;
+      const { authToken, cipherKey, memberSessionToken } = this.activeSession;
       const envelope = encryptPayload({ action }, cipherKey);
+
+      if (this.activeSession.transport === 'relay' && this.guestRelayClient) {
+        const reply = await this.sendRelayRequest(
+          this.guestRelayClient,
+          {
+            op: 'ACTION',
+            authToken,
+            sessionToken: String(memberSessionToken || ''),
+            envelope
+          },
+          'ACTION_RES',
+          6000
+        );
+        return reply?.res || { ok: false, error: '호스트 응답이 올바르지 않습니다.' };
+      }
+
+      const { hostEndpoint } = this.activeSession;
       const res = await this.httpPostJson(
         `http://${hostEndpoint.host}:${hostEndpoint.port}/api/action`,
         { envelope },
@@ -1851,6 +2973,27 @@ class SharedRoomManager {
           return { ok: false, error: '호스트 또는 작성자만 삭제할 수 있습니다.' };
         }
         room.notes = (room.notes || []).filter((n) => n.id !== noteId);
+        room.updatedAt = Date.now();
+        break;
+      }
+
+      case 'DELETE_NOTES_BATCH': {
+        const ids = Array.isArray(action.noteIds) ? action.noteIds : [];
+        if (ids.length === 0) return { ok: false, error: '삭제할 노트를 선택해 주세요.' };
+        let removedCount = 0;
+        let blockedCount = 0;
+        room.notes = (room.notes || []).filter((n) => {
+          if (!ids.includes(n.id)) return true;
+          if (perm === 'host-delete' && !isOwner && n.author?.uid !== actor.uid) {
+            blockedCount += 1;
+            return true;
+          }
+          removedCount += 1;
+          return false;
+        });
+        if (removedCount === 0 && blockedCount > 0) {
+          return { ok: false, error: '선택한 노트를 삭제할 권한이 없습니다.' };
+        }
         room.updatedAt = Date.now();
         break;
       }
@@ -1964,6 +3107,18 @@ class SharedRoomManager {
         break;
       }
 
+      case 'RENAME_SECTION': {
+        if (!isOwner) return { ok: false, error: '호스트만 섹션 이름을 변경할 수 있습니다.' };
+        const secId = String(action.sectionId || '');
+        const title = String(action.title || '').trim().slice(0, 32);
+        if (!title) return { ok: false, error: '섹션 이름을 입력해 주세요.' };
+        room.sections = (room.sections || []).map((s) =>
+          s.id === secId ? { ...s, title } : s
+        );
+        room.updatedAt = Date.now();
+        break;
+      }
+
       case 'DELETE_SECTION': {
         if (!isOwner) return { ok: false, error: '호스트만 섹션을 삭제할 수 있습니다.' };
         const secId = String(action.sectionId || '');
@@ -1984,6 +3139,18 @@ class SharedRoomManager {
         const icon = String(action.icon || '📁').slice(0, 4);
         const newFolder = { id: `fld-${Date.now()}`, name, icon };
         room.folders = [...(room.folders || DEFAULT_FOLDERS), newFolder].slice(0, 20);
+        break;
+      }
+
+      case 'RENAME_FOLDER': {
+        if (!isOwner) return { ok: false, error: '호스트만 폴더 이름을 변경할 수 있습니다.' };
+        const folderId = String(action.folderId || '');
+        const name = String(action.name || '').trim().slice(0, 32);
+        if (!name) return { ok: false, error: '폴더 이름을 입력해 주세요.' };
+        room.folders = (room.folders || []).map((f) =>
+          f.id === folderId ? { ...f, name } : f
+        );
+        room.updatedAt = Date.now();
         break;
       }
 
@@ -2069,6 +3236,16 @@ class SharedRoomManager {
           }
           this.sseClients.delete(targetUid);
         }
+        if (this.relayClients.has(targetUid)) {
+          this.relayClients.delete(targetUid);
+          if (this.hostRelayClient && this.hostRelayClient.connected) {
+            const kickEnv = encryptPayload(
+              { type: 'KICKED', targetUid },
+              this.activeSession.cipherKey
+            );
+            this.hostRelayClient.publishJson({ op: 'KICKED', envelope: kickEnv });
+          }
+        }
         break;
       }
 
@@ -2082,6 +3259,39 @@ class SharedRoomManager {
   }
 
   async leaveCurrentRoom() {
+    for (const [reqId, waiter] of this.pendingRelayReplies.entries()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('방에서 나가 연결이 종료되었습니다.'));
+      this.pendingRelayReplies.delete(reqId);
+    }
+
+    if (this.guestRelayClient) {
+      try {
+        if (this.guestRelayClient.connected && this.activeSession?.memberSessionToken) {
+          this.guestRelayClient.publishJson({
+            op: 'LEAVE',
+            sessionToken: this.activeSession.memberSessionToken
+          });
+        }
+        this.guestRelayClient.close();
+      } catch (_e) {
+        // ignore
+      }
+      this.guestRelayClient = null;
+    }
+
+    if (this.hostRelayClient) {
+      try {
+        if (this.hostRelayClient.connected) {
+          this.hostRelayClient.publishJson({ op: 'HOST_CLOSED' });
+        }
+        this.hostRelayClient.close();
+      } catch (_e) {
+        // ignore
+      }
+      this.hostRelayClient = null;
+    }
+
     if (this.guestEventReq) {
       try {
         this.guestEventReq.destroy();
@@ -2099,6 +3309,7 @@ class SharedRoomManager {
       }
     }
     this.sseClients.clear();
+    this.relayClients.clear();
     this.verifiedSessions.clear();
     this.joinNonces.clear();
 

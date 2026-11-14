@@ -45,6 +45,11 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   joinSharedRoom: (payload) => ipcRenderer.invoke('shared:join-room', payload),
   leaveSharedRoom: () => ipcRenderer.invoke('shared:leave-room'),
   dispatchSharedAction: (action) => ipcRenderer.invoke('shared:dispatch-action', action),
+  saveSharedRoomNow: () => ipcRenderer.invoke('shared:save-room-now'),
+  exportSharedRoom: (payload) => ipcRenderer.invoke('shared:export-room', payload),
+  pickSharedRoomBackup: () => ipcRenderer.invoke('shared:pick-room-backup'),
+  importSharedRoom: (payload) => ipcRenderer.invoke('shared:import-room', payload),
+  deleteSavedSharedRoom: (payload) => ipcRenderer.invoke('shared:delete-saved-room', payload),
   onSharedRoomUpdated: (callback) => {
     const handler = (_event, roomSnapshot) => callback(roomSnapshot);
     ipcRenderer.on('shared:room-updated', handler);

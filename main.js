@@ -1142,6 +1142,76 @@ ipcMain.handle('shared:dispatch-action', async (event, action) => {
   return await sharedRoomManager.dispatchRoomAction(action);
 });
 
+ipcMain.handle('shared:save-room-now', (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.saveRoomNow();
+});
+
+ipcMain.handle('shared:export-room', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  const exported = sharedRoomManager.exportHostedRoomBackup(payload?.roomId);
+  if (!exported.ok) return exported;
+
+  const ownerWin = BrowserWindow.fromWebContents(event.sender) || null;
+  const saveRes = await dialog.showSaveDialog(ownerWin, {
+    title: '공유 방 백업 저장 (.json)',
+    defaultPath: exported.suggestedFilename,
+    filters: [{ name: 'TreeNote Room Backup', extensions: ['json'] }]
+  });
+  if (saveRes.canceled || !saveRes.filePath) {
+    return { ok: false, canceled: true };
+  }
+  try {
+    fs.writeFileSync(saveRes.filePath, JSON.stringify(exported.backup, null, 2), 'utf8');
+    return { ok: true, filePath: saveRes.filePath };
+  } catch (err) {
+    return { ok: false, error: `백업 저장 실패: ${err.message}` };
+  }
+});
+
+ipcMain.handle('shared:pick-room-backup', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  const ownerWin = BrowserWindow.fromWebContents(event.sender) || null;
+  const openRes = await dialog.showOpenDialog(ownerWin, {
+    title: '공유 방 백업 파일 불러오기',
+    properties: ['openFile'],
+    filters: [{ name: 'TreeNote Room Backup', extensions: ['json'] }]
+  });
+  if (openRes.canceled || !openRes.filePaths || openRes.filePaths.length === 0) {
+    return { ok: false, canceled: true };
+  }
+  try {
+    const filePath = openRes.filePaths[0];
+    const stat = fs.statSync(filePath);
+    if (stat.size > 10 * 1024 * 1024) {
+      return { ok: false, error: '백업 파일이 10MB 제한을 초과했습니다.' };
+    }
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!parsed || !parsed.room || typeof parsed.room.roomName !== 'string') {
+      return { ok: false, error: '올바른 나무 노트 공유 방 백업 파일이 아닙니다.' };
+    }
+    return {
+      ok: true,
+      backupData: parsed,
+      defaultRoomName: parsed.room.roomName,
+      noteCount: Array.isArray(parsed.room.notes) ? parsed.room.notes.length : 0,
+      messageCount: Array.isArray(parsed.room.messages) ? parsed.room.messages.length : 0
+    };
+  } catch (err) {
+    return { ok: false, error: `백업 파일을 읽지 못했습니다: ${err.message}` };
+  }
+});
+
+ipcMain.handle('shared:import-room', (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.importHostedRoomBackup(payload || {});
+});
+
+ipcMain.handle('shared:delete-saved-room', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.deleteSavedRoom(payload?.roomId);
+});
+
 function formatUpdaterError(err) {
   const raw = String(err?.message || err || '');
   if (
