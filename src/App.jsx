@@ -1476,12 +1476,16 @@ export default function App() {
 
       {/* ================= Modern Dashboard 전체 레이아웃 ================= */}
       <div
-        className={`w-[min(1440px,calc(100%-32px))] mx-auto pt-10 pb-8 min-h-screen grid grid-cols-1 lg:grid-cols-[268px_1fr] gap-5 relative z-10 ${
+        className={`${
+          workspace === 'shared'
+            ? 'w-[min(1680px,calc(100%-24px))]'
+            : 'w-[min(1440px,calc(100%-28px))]'
+        } mx-auto pt-10 pb-6 min-h-screen grid grid-cols-1 lg:grid-cols-[248px_1fr] gap-4 lg:gap-5 relative z-10 overflow-x-hidden ${
           isLocked ? 'blur-lg pointer-events-none select-none' : ''
         }`}
       >
         {/* ================= 좌측 고정 사이드바 (Solid Sidebar Surface) ================= */}
-        <aside className="bg-sidebar-light dark:bg-sidebar-dark border border-line-light dark:border-line-dark rounded-[20px] p-5 flex flex-col gap-5 lg:sticky lg:top-10 lg:self-start">
+        <aside className="bg-sidebar-light dark:bg-sidebar-dark border border-line-light dark:border-line-dark rounded-[20px] p-4 lg:p-5 flex flex-col gap-4 lg:sticky lg:top-10 lg:self-start lg:max-h-[calc(100vh-56px)] lg:overflow-y-auto">
           {/* 브랜드 헤더 + 빠른 잠금 & 환경설정 버튼 */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-3">
@@ -1525,80 +1529,82 @@ export default function App() {
           </div>
 
           {/* 워크스페이스 전환 */}
-          <nav className="flex flex-col gap-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1 mb-0.5">
+          <nav className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1">
               워크스페이스
             </span>
-            <button
-              type="button"
-              onClick={() => setWorkspace('composer')}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2.5 transition-colors border ${
-                workspace === 'composer'
-                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
-                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
-              }`}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 5v14" />
-                <path d="M5 12h14" />
-              </svg>
-              <span>노트·클립 작성</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setWorkspace('monitor')}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors border ${
-                workspace === 'monitor'
-                  ? 'bg-surface-light dark:bg-surface-dark text-emerald-600 dark:text-emerald-400 border-line-light dark:border-line-dark shadow-sm'
-                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <polyline points="12 6 12 12 16 14" />
+            <div className="grid grid-cols-3 lg:flex lg:flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={() => setWorkspace('composer')}
+                className={`w-full px-2.5 lg:px-3.5 py-2 lg:py-2.5 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-start gap-2 transition-colors border ${
+                  workspace === 'composer'
+                    ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
+                    : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
+                }`}
+              >
+                <svg className="shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
                 </svg>
-                <span>클립보드 자동 감지</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {isMonitoring && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                )}
-                {tempQueue.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-extrabold">
-                    {tempQueue.length}
-                  </span>
-                )}
-              </div>
-            </button>
+                <span className="truncate">노트·클립 작성</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setWorkspace('shared')}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors border ${
-                workspace === 'shared'
-                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
-                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
-                <span>공유 스페이스 (그룹·채팅)</span>
-              </div>
-              <span className="px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 text-[9px] font-extrabold">
-                NEW
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setWorkspace('monitor')}
+                className={`w-full px-2.5 lg:px-3.5 py-2 lg:py-2.5 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-between gap-1.5 transition-colors border ${
+                  workspace === 'monitor'
+                    ? 'bg-surface-light dark:bg-surface-dark text-emerald-600 dark:text-emerald-400 border-line-light dark:border-line-dark shadow-sm'
+                    : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <svg className="shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  <span className="truncate">클립보드 감지</span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {isMonitoring && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                  )}
+                  {tempQueue.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-extrabold">
+                      {tempQueue.length}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setWorkspace('shared')}
+                className={`w-full px-2.5 lg:px-3.5 py-2 lg:py-2.5 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-between gap-1.5 transition-colors border ${
+                  workspace === 'shared'
+                    ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
+                    : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <svg className="shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                  <span className="truncate">공유 스페이스</span>
+                </div>
+                <span className="hidden lg:inline-block px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 text-[9px] font-extrabold shrink-0">
+                  GROUP
+                </span>
+              </button>
+            </div>
           </nav>
 
           {/* Bento 미니 통계 대시보드 */}
-          <section className="flex flex-col gap-1.5">
+          <section className={`${workspace === 'shared' ? 'hidden lg:flex' : 'flex'} flex-col gap-1.5`}>
             <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1">
               요약 통계
             </span>
@@ -1630,41 +1636,43 @@ export default function App() {
             </div>
           </section>
 
-          {/* 수직 리스트형 카테고리 네비게이션 (항목별 카운트 배지 포함) */}
-          <section className="flex flex-col gap-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1 mb-0.5">
-              카테고리
-            </span>
-            <div className="flex flex-col gap-0.5 max-h-64 overflow-y-auto pr-0.5">
-              {FILTER_CATEGORIES.map((cat) => {
-                const active = filterCategory === cat;
-                const count = categoryCounts[cat] || 0;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setFilterCategory(cat)}
-                    className={`w-full px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors ${
-                      active
-                        ? 'bg-blue-600 text-white font-bold shadow-sm'
-                        : 'text-zinc-700 dark:text-zinc-300 hover:bg-surface-light/70 dark:hover:bg-surface-dark/70'
-                    }`}
-                  >
-                    <span className="truncate">{cat}</span>
-                    <span
-                      className={`text-[11px] px-1.5 py-0.2 rounded-md font-bold ${
+          {/* 수직 리스트형 카테고리 네비게이션 (공유 스페이스에서는 숨겨 공간 확보, 모바일에선 가로 스크롤) */}
+          {workspace !== 'shared' && (
+            <section className="flex flex-col gap-1">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 px-1 mb-0.5">
+                카테고리
+              </span>
+              <div className="flex flex-row lg:flex-col gap-1 lg:gap-0.5 overflow-x-auto lg:overflow-x-visible lg:max-h-64 lg:overflow-y-auto pb-1 lg:pb-0 lg:pr-0.5">
+                {FILTER_CATEGORIES.map((cat) => {
+                  const active = filterCategory === cat;
+                  const count = categoryCounts[cat] || 0;
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setFilterCategory(cat)}
+                      className={`w-auto lg:w-full shrink-0 px-3 py-1.5 lg:py-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-colors ${
                         active
-                          ? 'bg-white/20 text-white'
-                          : 'text-zinc-400 dark:text-zinc-500'
+                          ? 'bg-blue-600 text-white font-bold shadow-sm'
+                          : 'text-zinc-700 dark:text-zinc-300 bg-surface-light/60 lg:bg-transparent dark:bg-surface-dark/60 lg:dark:bg-transparent hover:bg-surface-light/80 dark:hover:bg-surface-dark/80'
                       }`}
                     >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
+                      <span className="truncate">{cat}</span>
+                      <span
+                        className={`text-[11px] px-1.5 py-0.2 rounded-md font-bold ${
+                          active
+                            ? 'bg-white/20 text-white'
+                            : 'text-zinc-400 dark:text-zinc-500'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* 하단 테마 전환 버튼 */}
           <div className="mt-auto pt-2 border-t border-line-light dark:border-line-dark">
@@ -2177,7 +2185,7 @@ export default function App() {
                           className={`w-7 h-7 rounded-lg grid place-items-center shrink-0 transition-colors ${
                             note.pinned
                               ? 'text-blue-600 dark:text-blue-400 bg-blue-600/10'
-                              : 'text-zinc-400 opacity-0 group-hover:opacity-100 hover:bg-muted-light dark:hover:bg-muted-dark hover:text-zinc-700 dark:hover:text-zinc-200'
+                              : 'text-zinc-400 opacity-60 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 hover:bg-muted-light dark:hover:bg-muted-dark hover:text-zinc-700 dark:hover:text-zinc-200'
                           }`}
                           title={note.pinned ? '고정 해제' : '상단 고정'}
                         >
@@ -2317,7 +2325,7 @@ export default function App() {
             className="bg-surface-light dark:bg-surface-dark w-full max-w-3xl max-h-[88vh] rounded-[20px] shadow-2xl flex flex-col overflow-hidden animate-modal border border-line-light dark:border-line-dark"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
+            <div className="flex justify-between items-center px-5 sm:px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
               <div className="flex items-center gap-2.5 flex-wrap">
                 <span className="px-2.5 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark border border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-300 text-xs font-bold">
                   {viewingNote.category || CATEGORIES[0]}
@@ -2336,7 +2344,7 @@ export default function App() {
             </div>
 
             {/* 독서 최적화 컨테이너 (최대 줄 길이 68ch 중심) */}
-            <div className="px-8 py-8 overflow-y-auto flex-1">
+            <div className="px-5 py-6 sm:px-8 sm:py-8 overflow-y-auto flex-1">
               <div className="max-w-[68ch] mx-auto flex flex-col gap-5">
                 <h1 className="text-2xl sm:text-[28px] font-extrabold text-zinc-900 dark:text-white break-words leading-tight">
                   {viewingNote.title}
@@ -2450,7 +2458,7 @@ export default function App() {
             className="bg-surface-light dark:bg-surface-dark w-full max-w-3xl max-h-[90vh] rounded-[20px] shadow-2xl flex flex-col overflow-hidden animate-modal border border-line-light dark:border-line-dark"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
+            <div className="flex justify-between items-center px-5 sm:px-7 py-4 border-b border-line-light dark:border-line-dark bg-canvas-light/60 dark:bg-canvas-dark/60">
               <h2 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
                 <IconEdit /> 노트·클립 편집
               </h2>
@@ -2463,7 +2471,7 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-7 overflow-y-auto flex-1 flex flex-col gap-3.5">
+            <div className="p-5 sm:p-7 overflow-y-auto flex-1 flex flex-col gap-3.5">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <CustomSelect
                   value={editingNote.category || CATEGORIES[0]}

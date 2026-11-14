@@ -1032,7 +1032,7 @@ export function SharedSpacePanel({
                 <select
                   value={hostPermissionMode}
                   onChange={(e) => setHostPermissionMode(e.target.value)}
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
                 >
                   <option value="all">모두 노트 작성 · 편집 · 삭제 가능 (공동 작업)</option>
                   <option value="host-delete">모두 작성 · 편집 가능 / 삭제는 호스트와 본인만</option>
@@ -1269,33 +1269,33 @@ export function SharedSpacePanel({
   const isHost = activeRoom.mode === 'host' || activeRoom.hostProfile?.uid === currentAccount.uid;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3.5 min-w-0">
       {/* 1. 상단 방 컨트롤 헤더 */}
-      <div className="bg-surface-light dark:bg-surface-dark px-5 py-3.5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-surface-light dark:bg-surface-dark px-4 py-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center shadow-sm shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center shadow-sm shrink-0">
             👥
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h2 className="text-sm sm:text-base font-extrabold text-zinc-900 dark:text-zinc-100 truncate max-w-[260px] sm:max-w-xs">
                 {activeRoom.roomName}
               </h2>
               <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap ${
                   isHost
                     ? 'bg-blue-600/15 text-blue-600 dark:text-blue-400 border border-blue-500/30'
                     : 'bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
                 }`}
               >
-                {isHost ? '👑 호스트(방장)' : '🟢 참여 멤버'}
+                {isHost ? '👑 호스트' : '🟢 멤버'}
               </span>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400 whitespace-nowrap">
                 {activeRoom.permissionMode === 'readonly'
-                  ? '🔒 읽기 전용(공지방)'
+                  ? '🔒 읽기 전용'
                   : activeRoom.permissionMode === 'host-delete'
-                  ? '🛡️ 호스트 삭제 보호'
-                  : '✏️ 모두 편집 가능'}
+                  ? '🛡️ 삭제 보호'
+                  : '✏️ 모두 편집'}
               </span>
             </div>
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
@@ -1310,14 +1310,14 @@ export function SharedSpacePanel({
             <button
               type="button"
               onClick={() => setShowMembersPopover((v) => !v)}
-              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-2"
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-2 whitespace-nowrap shrink-0"
             >
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span>멤버 {(activeRoom.members || []).length}명</span>
             </button>
 
             {showMembersPopover && (
-              <div className="absolute right-0 mt-2 w-72 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
+              <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-32px)] bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
                 <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-2">
                   <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
                     접속 중인 멤버
@@ -1325,7 +1325,7 @@ export function SharedSpacePanel({
                   <button
                     type="button"
                     onClick={() => setShowMembersPopover(false)}
-                    className="text-xs text-zinc-400 hover:text-zinc-600"
+                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
                   >
                     ✕
                   </button>
@@ -1350,7 +1350,7 @@ export function SharedSpacePanel({
                           onClick={() =>
                             api.dispatchSharedAction({ type: 'KICK_MEMBER', targetUid: m.uid })
                           }
-                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white"
+                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white shrink-0"
                         >
                           내보내기
                         </button>
@@ -1369,7 +1369,7 @@ export function SharedSpacePanel({
                           permissionMode: e.target.value
                         })
                       }
-                      className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                      className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
                     >
                       <option value="all">모두 편집 가능</option>
                       <option value="host-delete">호스트만 삭제 가능</option>
@@ -1384,7 +1384,7 @@ export function SharedSpacePanel({
           <button
             type="button"
             onClick={handleCopyInviteInfo}
-            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200"
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
             title="방 이름과 초대 코드 복사"
           >
             🔗 초대 코드 복사
@@ -1393,19 +1393,19 @@ export function SharedSpacePanel({
           <button
             type="button"
             onClick={() => setChatOpen((v) => !v)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors whitespace-nowrap shrink-0 ${
               chatOpen
                 ? 'bg-blue-600 text-white border-blue-600'
                 : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 border-line-light dark:border-line-dark'
             }`}
           >
-            💬 그룹 채팅 ({(activeRoom.messages || []).length})
+            💬 채팅 ({(activeRoom.messages || []).length})
           </button>
 
           <button
             type="button"
             onClick={handleLeaveRoom}
-            className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors"
+            className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors whitespace-nowrap shrink-0"
           >
             방 나가기
           </button>
@@ -1413,10 +1413,10 @@ export function SharedSpacePanel({
       </div>
 
       {/* 2. 폴더(컬렉션) 정리 바 + 뷰 스위치 + 검색 + 액션 버튼 */}
-      <div className="bg-surface-light dark:bg-surface-dark p-3.5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3">
+      <div className="bg-surface-light dark:bg-surface-dark p-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-2.5">
         {/* 상단 줄: 폴더 탭 & 새 폴더 */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
             {(activeRoom.folders || []).map((folder) => {
               const active = selectedFolderId === folder.id;
               return (
@@ -1424,7 +1424,7 @@ export function SharedSpacePanel({
                   key={folder.id}
                   type="button"
                   onClick={() => setSelectedFolderId(folder.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 ${
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
                     active
                       ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 shadow-sm'
                       : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
@@ -1461,7 +1461,7 @@ export function SharedSpacePanel({
               <button
                 type="button"
                 onClick={() => setShowNewFolderInput(true)}
-                className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
+                className="px-2.5 py-1 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 whitespace-nowrap"
               >
                 + 폴더 추가
               </button>
@@ -1469,59 +1469,59 @@ export function SharedSpacePanel({
           </div>
 
           {/* 우측: 새 공유 노트 작성 & 내 노트 불러오기 */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
             <button
               type="button"
               onClick={() => setShowPersonalPicker(true)}
-              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200"
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap"
             >
-              📤 내 노트에서 불러오기
+              📤 내 노트 불러오기
             </button>
             <button
               type="button"
               onClick={() => openCreateNoteModal('idea')}
-              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
+              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm whitespace-nowrap"
             >
-              + 새 공유 노트 작성
+              + 새 공유 노트
             </button>
           </div>
         </div>
 
         {/* 하단 줄: 정리 뷰 모드 전환 + 상태 배지 필터 + 검색창 */}
-        <div className="flex items-center justify-between gap-3 flex-wrap pt-2 border-t border-line-light dark:border-line-dark">
-          <div className="flex items-center gap-1 bg-canvas-light dark:bg-canvas-dark p-1 rounded-xl border border-line-light dark:border-line-dark">
+        <div className="flex items-center justify-between gap-2.5 flex-wrap pt-2 border-t border-line-light dark:border-line-dark">
+          <div className="flex items-center gap-1 bg-canvas-light dark:bg-canvas-dark p-1 rounded-xl border border-line-light dark:border-line-dark flex-wrap">
             <button
               type="button"
               onClick={() => setViewMode('board')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                 viewMode === 'board'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
                   : 'text-zinc-500'
               }`}
             >
-              🗂️ 섹션 보드 뷰
+              🗂️ 섹션 보드
             </button>
             <button
               type="button"
               onClick={() => setViewMode('grid')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                 viewMode === 'grid'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
                   : 'text-zinc-500'
               }`}
             >
-              📋 카드 그리드 뷰
+              📋 카드 그리드
             </button>
             <button
               type="button"
               onClick={() => setViewMode('checklist')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                 viewMode === 'checklist'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
                   : 'text-zinc-500'
               }`}
             >
-              ☑️ 체크리스트 모아보기
+              ☑️ 체크리스트
             </button>
           </div>
 
@@ -1529,7 +1529,7 @@ export function SharedSpacePanel({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-2.5 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-700 dark:text-zinc-200 outline-none"
+              className="px-2.5 py-1.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-700 dark:text-zinc-200 outline-none shrink-0"
             >
               <option value="all">상태: 전체</option>
               <option value="중요">🔥 중요</option>
@@ -1542,7 +1542,7 @@ export function SharedSpacePanel({
               value={roomSearch}
               onChange={(e) => setRoomSearch(e.target.value)}
               placeholder="공유 노트 제목, 본문, 작성자 검색..."
-              className="flex-1 px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              className="flex-1 min-w-0 px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
             />
           </div>
         </div>
@@ -1618,7 +1618,7 @@ export function SharedSpacePanel({
       )}
 
       {/* 4. 메인 영역: 좌측 공유 노트 보드 + 우측 실시간 그룹 채팅 */}
-      <div className="flex flex-col lg:flex-row gap-4 items-start">
+      <div className="flex flex-col xl:flex-row gap-4 items-stretch xl:items-start min-w-0">
         {/* 좌측 공유 노트 영역 */}
         <div className="flex-1 min-w-0 w-full">
           {/* (A) 섹션 칸반 보드 뷰 */}
@@ -1647,7 +1647,7 @@ export function SharedSpacePanel({
                         setDraggedNoteId(null);
                       }
                     }}
-                    className={`w-[295px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark border-t-4 ${topBorder} p-3.5 flex flex-col gap-3 transition-colors ${
+                    className={`w-[272px] sm:w-[292px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark border-t-4 ${topBorder} p-3.5 flex flex-col gap-3 transition-colors ${
                       isDragOver ? 'ring-2 ring-blue-500 bg-blue-500/5' : ''
                     }`}
                   >
@@ -1867,140 +1867,198 @@ export function SharedSpacePanel({
           )}
         </div>
 
-        {/* 우측 도킹형 실시간 그룹 채팅 패널 */}
+        {/* 우측 도킹형 실시간 그룹 채팅 패널 (뷰포트 높이에 맞춰 자동 조절 + sticky 고정으로 입력창 잘림 방지) */}
         {chatOpen && (
-          <aside className="w-full lg:w-[340px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col h-[620px]">
+          <aside className="w-full xl:w-[340px] 2xl:w-[370px] shrink-0 min-w-0 overflow-hidden bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col h-[460px] xl:h-[clamp(400px,calc(100vh-250px),680px)] xl:sticky xl:top-10">
             {/* 채팅 헤더 */}
-            <div className="px-4 py-3 border-b border-line-light dark:border-line-dark flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100">
+            <div className="shrink-0 px-4 py-2.5 border-b border-line-light dark:border-line-dark flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
                   💬 그룹 실시간 채팅
                 </span>
               </div>
-              <span className="text-[11px] text-zinc-400">
-                메시지 우측 [📌박제]로 노트화
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] text-zinc-400 whitespace-nowrap">
+                  📌 눌러 노트화
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setChatOpen(false)}
+                  className="w-6 h-6 rounded-lg text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-muted-light dark:hover:bg-muted-dark grid place-items-center transition-colors"
+                  title="채팅창 접기"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {/* 채팅 메시지 목록 */}
-            <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
-              {(activeRoom.messages || []).map((msg) => {
-                if (msg.isSystem) {
-                  return (
-                    <div key={msg.id} className="text-center my-1">
-                      <span className="text-[11px] px-2.5 py-1 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
-                        {msg.text}
-                      </span>
-                    </div>
-                  );
-                }
-
-                const isMine = msg.author?.uid === currentAccount.uid;
-                const timeStr = new Date(msg.createdAt || Date.now()).toLocaleTimeString('ko-KR', {
-                  hour: '2-digit',
-                  minute: '2-digit'
-                });
-
-                return (
-                  <div
-                    key={msg.id}
-                    className={`group flex gap-2.5 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}
-                  >
-                    <UserAvatar user={msg.author} size="sm" />
-                    <div
-                      className={`max-w-[78%] flex flex-col ${
-                        isMine ? 'items-end' : 'items-start'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                          {msg.author?.name}
+            <div className="flex-1 min-h-0 overflow-y-auto p-3.5 flex flex-col gap-3">
+              {(activeRoom.messages || []).length === 0 ? (
+                <div className="my-auto py-8 text-center text-xs text-zinc-400">
+                  첫 메시지를 보내 팀원과 대화를 시작해 보세요.
+                </div>
+              ) : (
+                (activeRoom.messages || []).map((msg) => {
+                  if (msg.isSystem) {
+                    return (
+                      <div key={msg.id} className="text-center my-0.5">
+                        <span className="inline-block max-w-full break-words text-[11px] px-2.5 py-1 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
+                          {msg.text}
                         </span>
-                        <span className="text-[10px] text-zinc-400">{timeStr}</span>
                       </div>
+                    );
+                  }
 
+                  const isMine = msg.author?.uid === currentAccount.uid;
+                  const timeStr = new Date(msg.createdAt || Date.now()).toLocaleTimeString('ko-KR', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`group flex gap-2 min-w-0 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}
+                    >
+                      <UserAvatar user={msg.author} size="sm" />
                       <div
-                        className={`p-3 rounded-2xl text-xs leading-relaxed break-words ${
-                          isMine
-                            ? 'bg-blue-600 text-white rounded-tr-sm'
-                            : 'bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-zinc-100 border border-line-light dark:border-line-dark rounded-tl-sm'
+                        className={`min-w-0 max-w-[82%] flex flex-col ${
+                          isMine ? 'items-end' : 'items-start'
                         }`}
                       >
-                        {msg.text && <div className="whitespace-pre-wrap">{msg.text}</div>}
-                        {msg.imageDataUrl && (
-                          <img
-                            src={msg.imageDataUrl}
-                            alt="채팅 이미지"
-                            className="mt-2 rounded-lg max-h-44 object-contain bg-black/10"
-                          />
-                        )}
-                        {msg.sharedNoteRef && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const target = (activeRoom.notes || []).find(
-                                (n) => n.id === msg.sharedNoteRef.id
-                              );
-                              if (target) {
-                                setViewingSharedNote(target);
-                              } else {
-                                showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
-                              }
-                            }}
-                            className={`mt-2 w-full p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
-                              isMine
-                                ? 'bg-blue-700/80 border-white/20 text-white'
-                                : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
-                            }`}
-                          >
-                            <div className="min-w-0">
-                              <div className="text-[10px] opacity-75">📄 공유 노트 바로가기</div>
-                              <div className="text-xs font-bold truncate">
-                                {msg.sharedNoteRef.title}
-                              </div>
-                            </div>
-                            <span className="text-xs shrink-0">↗</span>
-                          </button>
-                        )}
-                      </div>
-
-                      {/* 채팅 메시지 -> 공유 노트로 즉시 박제 버튼 */}
-                      <div className="mt-1 flex items-center gap-2">
-                        {msg.pinnedToNoteId ? (
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
-                            📌 공유 노트로 등록됨
+                        <div className="flex items-center gap-1.5 mb-1 max-w-full">
+                          <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300 truncate">
+                            {msg.author?.name}
                           </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handlePromoteChatToNote(msg.id)}
-                            className="opacity-0 group-hover:opacity-100 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline transition-opacity"
-                          >
-                            📌 노트로 박제
-                          </button>
-                        )}
+                          <span className="text-[10px] text-zinc-400 shrink-0">{timeStr}</span>
+                        </div>
+
+                        <div
+                          className={`max-w-full px-3 py-2.5 rounded-2xl text-xs leading-relaxed break-words [overflow-wrap:anywhere] overflow-hidden ${
+                            isMine
+                              ? 'bg-blue-600 text-white rounded-tr-sm'
+                              : 'bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-zinc-100 border border-line-light dark:border-line-dark rounded-tl-sm'
+                          }`}
+                        >
+                          {msg.text && <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{msg.text}</div>}
+                          {msg.imageDataUrl && (
+                            <img
+                              src={msg.imageDataUrl}
+                              alt="채팅 이미지"
+                              className="mt-2 rounded-lg max-h-44 max-w-full object-contain bg-black/10"
+                            />
+                          )}
+                          {msg.sharedNoteRef && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const target = (activeRoom.notes || []).find(
+                                  (n) => n.id === msg.sharedNoteRef.id
+                                );
+                                if (target) {
+                                  setViewingSharedNote(target);
+                                } else {
+                                  showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
+                                }
+                              }}
+                              className={`mt-2 w-full p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
+                                isMine
+                                  ? 'bg-blue-700/80 border-white/20 text-white'
+                                  : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="text-[10px] opacity-75">📄 공유 노트 바로가기</div>
+                                <div className="text-xs font-bold truncate">
+                                  {msg.sharedNoteRef.title}
+                                </div>
+                              </div>
+                              <span className="text-xs shrink-0">↗</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* 채팅 메시지 -> 공유 노트로 즉시 박제 버튼 */}
+                        <div className="mt-1 flex items-center gap-2">
+                          {msg.pinnedToNoteId ? (
+                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
+                              📌 공유 노트로 등록됨
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handlePromoteChatToNote(msg.id)}
+                              className="opacity-75 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline transition-opacity"
+                            >
+                              📌 노트로 박제
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
               <div ref={chatEndRef} />
             </div>
 
+            {/* 인라인 노트 공유 선택 트레이 (클립/짤림 방지) */}
+            {showChatNotePicker && (
+              <div className="shrink-0 max-h-44 overflow-y-auto px-3 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex flex-col gap-1">
+                <div className="flex items-center justify-between px-1 pb-1">
+                  <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
+                    채팅에 공유할 노트 선택
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowChatNotePicker(false)}
+                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {(activeRoom.notes || []).length === 0 ? (
+                  <div className="text-[11px] text-zinc-400 px-2 py-2 text-center">
+                    아직 방에 공유할 노트가 없습니다.
+                  </div>
+                ) : (
+                  (activeRoom.notes || []).map((n) => (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() => {
+                        setChatShareNoteRef({
+                          id: n.id,
+                          title: n.title,
+                          sectionId: n.sectionId,
+                          statusBadge: n.statusBadge
+                        });
+                        setShowChatNotePicker(false);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-left text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate"
+                    >
+                      📄 {n.title}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
             {/* 첨부 미리보기 (이미지 또는 노트 링크 카드) */}
             {(chatImage || chatShareNoteRef) && (
-              <div className="px-3.5 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex items-center justify-between gap-2">
+              <div className="shrink-0 px-3.5 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex items-center justify-between gap-2 min-w-0">
                 {chatImage && (
-                  <div className="flex items-center gap-2">
-                    <img src={chatImage} alt="첨부" className="w-8 h-8 rounded object-cover" />
-                    <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <img src={chatImage} alt="첨부" className="w-8 h-8 rounded object-cover shrink-0" />
+                    <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 truncate">
                       클립보드 이미지 첨부됨
                     </span>
                   </div>
                 )}
                 {chatShareNoteRef && (
-                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate">
+                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate min-w-0">
                     📄 노트 공유: {chatShareNoteRef.title}
                   </div>
                 )}
@@ -2010,7 +2068,7 @@ export function SharedSpacePanel({
                     setChatImage('');
                     setChatShareNoteRef(null);
                   }}
-                  className="text-xs text-zinc-400 hover:text-red-500"
+                  className="text-xs text-zinc-400 hover:text-red-500 shrink-0 px-1"
                 >
                   ✕
                 </button>
@@ -2020,61 +2078,38 @@ export function SharedSpacePanel({
             {/* 채팅 입력창 */}
             <form
               onSubmit={handleSendChat}
-              className="p-3 border-t border-line-light dark:border-line-dark flex flex-col gap-2"
+              className="shrink-0 p-3 border-t border-line-light dark:border-line-dark flex flex-col gap-2 bg-surface-light dark:bg-surface-dark"
             >
-              <div className="flex items-center gap-1.5">
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowChatNotePicker((v) => !v)}
-                    className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-[11px] font-bold text-zinc-600 dark:text-zinc-300"
-                    title="방 안의 노트 카드를 채팅에 공유"
-                  >
-                    📄 노트 공유
-                  </button>
-                  {showChatNotePicker && (
-                    <div className="absolute bottom-9 left-0 w-64 max-h-48 overflow-y-auto bg-surface-light dark:bg-surface-dark rounded-xl border border-line-light dark:border-line-dark shadow-xl p-2 z-30 flex flex-col gap-1">
-                      <div className="text-[10px] font-bold text-zinc-400 px-2 py-1">
-                        채팅에 공유할 노트 선택
-                      </div>
-                      {(activeRoom.notes || []).map((n) => (
-                        <button
-                          key={n.id}
-                          type="button"
-                          onClick={() => {
-                            setChatShareNoteRef({
-                              id: n.id,
-                              title: n.title,
-                              sectionId: n.sectionId,
-                              statusBadge: n.statusBadge
-                            });
-                            setShowChatNotePicker(false);
-                          }}
-                          className="px-2.5 py-1.5 rounded-lg hover:bg-muted-light dark:hover:bg-muted-dark text-left text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate"
-                        >
-                          {n.title}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <span className="text-[10px] text-zinc-400">
-                  Ctrl+V로 이미지 전송 가능
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setShowChatNotePicker((v) => !v)}
+                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold whitespace-nowrap transition-colors ${
+                    showChatNotePicker
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border-line-light dark:border-line-dark text-zinc-600 dark:text-zinc-300'
+                  }`}
+                  title="방 안의 노트 카드를 채팅에 공유"
+                >
+                  📄 노트 공유
+                </button>
+                <span className="text-[10px] text-zinc-400 truncate">
+                  Ctrl+V 이미지 전송
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <input
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onPaste={handleChatPaste}
                   placeholder="메시지 입력 (Enter 전송)..."
-                  className="flex-1 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
                 <button
                   type="submit"
-                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0"
+                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0 transition-colors"
                 >
                   전송
                 </button>
@@ -2093,7 +2128,7 @@ export function SharedSpacePanel({
           onClick={() => setShowNoteModal(false)}
         >
           <div
-            className="bg-surface-light dark:bg-surface-dark w-full max-w-2xl rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-2xl rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-4 sm:p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -2103,7 +2138,7 @@ export function SharedSpacePanel({
               <button
                 type="button"
                 onClick={() => setShowNoteModal(false)}
-                className="text-sm text-zinc-400 hover:text-zinc-600"
+                className="text-sm text-zinc-400 hover:text-zinc-600 px-1"
               >
                 ✕
               </button>
@@ -2125,7 +2160,7 @@ export function SharedSpacePanel({
                   <select
                     value={noteSectionId}
                     onChange={(e) => setNoteSectionId(e.target.value)}
-                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
                   >
                     {(activeRoom.sections || []).map((s) => (
                       <option key={s.id} value={s.id}>
@@ -2140,7 +2175,7 @@ export function SharedSpacePanel({
                   <select
                     value={noteFolderId}
                     onChange={(e) => setNoteFolderId(e.target.value)}
-                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
                   >
                     {(activeRoom.folders || []).map((f) => (
                       <option key={f.id} value={f.id}>
@@ -2155,7 +2190,7 @@ export function SharedSpacePanel({
                   <select
                     value={noteStatusBadge}
                     onChange={(e) => setNoteStatusBadge(e.target.value)}
-                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
                   >
                     <option value="">선택 안 함</option>
                     <option value="중요">🔥 중요</option>
@@ -2595,12 +2630,12 @@ function SharedNoteCard({
       </div>
 
       {/* 제목 & 본문 요약 */}
-      <div onClick={onView} className="cursor-pointer flex flex-col gap-1">
-        <h4 className="text-xs sm:text-sm font-extrabold text-zinc-900 dark:text-zinc-100 line-clamp-2">
+      <div onClick={onView} className="cursor-pointer flex flex-col gap-1 min-w-0">
+        <h4 className="text-xs sm:text-sm font-extrabold text-zinc-900 dark:text-zinc-100 line-clamp-2 break-words [overflow-wrap:anywhere]">
           {note.title}
         </h4>
         {plain && (
-          <p className="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-3 leading-relaxed">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-3 leading-relaxed break-words [overflow-wrap:anywhere]">
             {plain}
           </p>
         )}
@@ -2663,12 +2698,12 @@ function SharedNoteCard({
       )}
 
       {/* 하단 액션 바 */}
-      <div className="flex items-center justify-between pt-2 border-t border-line-light dark:border-line-dark text-[11px] font-bold">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pt-2 border-t border-line-light dark:border-line-dark text-[11px] font-bold">
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onSavePersonal}
-            className="text-emerald-600 dark:text-emerald-400 hover:underline"
+            className="text-emerald-600 dark:text-emerald-400 hover:underline whitespace-nowrap"
             title="내 개인 노트로 저장"
           >
             📥 내 노트로
@@ -2676,24 +2711,24 @@ function SharedNoteCard({
           <button
             type="button"
             onClick={onShareInChat}
-            className="text-blue-600 dark:text-blue-400 hover:underline"
+            className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
             title="채팅창에 이 노트 공유"
           >
             💬 채팅공유
           </button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onEdit}
-            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 whitespace-nowrap"
           >
             수정
           </button>
           <button
             type="button"
             onClick={onDelete}
-            className="text-zinc-400 hover:text-red-500"
+            className="text-zinc-400 hover:text-red-500 whitespace-nowrap"
           >
             삭제
           </button>

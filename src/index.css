@@ -2,10 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
 body {
   @apply bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-gray-100 transition-colors duration-200 overflow-x-hidden font-sans;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role='button'],
+  select:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  select:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid rgb(37 99 235 / 0.7);
+    outline-offset: 2px;
+  }
 }
 
 .drag-titlebar {
@@ -82,4 +109,26 @@ body {
   white-space: pre-wrap;
   word-wrap: break-word;
   line-height: 1.7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .animate-modal,
+  .animate-list-item,
+  .animate-pulse,
+  .animate-ping,
+  .animate-spin {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
 }
