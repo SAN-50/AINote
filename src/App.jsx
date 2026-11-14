@@ -26,6 +26,7 @@ import { CustomSelect } from './components/CustomSelect';
 import { FormattingBar } from './components/FormattingBar';
 import { PasswordLockScreen, PasswordSetupModal } from './components/LicenseLockModal';
 import { MonitorPanel, getTempTimeInfo, formatFileSize } from './components/MonitorPanel';
+import { SharedSpacePanel } from './components/SharedSpacePanel';
 
 const api = typeof window !== 'undefined' ? window.treeNoteAPI : null;
 
@@ -1155,6 +1156,28 @@ export default function App() {
     }
   };
 
+  // 공유 방 노트를 내 개인 노트로 복사 저장
+  const handleSaveSharedToPersonal = (sharedNote) => {
+    if (!sharedNote) return;
+    const now = new Date();
+    const newPersonal = {
+      id: generateId(),
+      title: sharedNote.title || '공유 방에서 가져온 노트',
+      content: normalizeContentToSafeHtml(sharedNote.content || ''),
+      category: CATEGORIES.includes(sharedNote.category) ? sharedNote.category : CATEGORIES[0],
+      tags: Array.isArray(sharedNote.tags) ? sharedNote.tags : ['공유노트'],
+      pinned: false,
+      copied: 0,
+      imageDataUrl: sharedNote.imageDataUrl || '',
+      fileInfo: null,
+      date: now.toLocaleString('ko-KR'),
+      timestamp: now.getTime(),
+      createdAt: now.getTime()
+    };
+    setNotes((prev) => [newPersonal, ...prev]);
+    showToast(`'${newPersonal.title}' 노트를 내 개인 노트에 저장했습니다 ✓`, 'success');
+  };
+
   // 11. 통계, 카테고리별 개수 및 필터링 계산
   const todayCopyCount = useMemo(() => {
     const todayKey = new Date().toISOString().slice(0, 10);
@@ -1533,6 +1556,29 @@ export default function App() {
                 )}
               </div>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setWorkspace('shared')}
+              className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors border ${
+                workspace === 'shared'
+                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 border-line-light dark:border-line-dark shadow-sm'
+                  : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:bg-surface-light/60 dark:hover:bg-surface-dark/60'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span>공유 스페이스 (그룹·채팅)</span>
+              </div>
+              <span className="px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 text-[9px] font-extrabold">
+                NEW
+              </span>
+            </button>
           </nav>
 
           {/* Bento 미니 통계 대시보드 */}
@@ -1648,6 +1694,15 @@ export default function App() {
             </div>
           )}
 
+          {workspace === 'shared' ? (
+            <SharedSpacePanel
+              api={api}
+              personalNotes={notes}
+              onSaveToPersonalNotes={handleSaveSharedToPersonal}
+              showToast={showToast}
+            />
+          ) : (
+            <>
           {/* 상단 고정 검색 & 필터 바 */}
           <section className="bg-surface-light dark:bg-surface-dark px-4 py-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 flex-1 min-w-[220px]">
@@ -2187,6 +2242,8 @@ export default function App() {
               </div>
             )}
           </section>
+          </>
+          )}
         </main>
       </div>
 

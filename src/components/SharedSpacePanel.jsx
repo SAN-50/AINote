@@ -1,0 +1,2391 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { normalizeContentToSafeHtml, getPlainText, sanitizeNoteHtml } from '../utils/sanitize';
+import { FormattingBar } from './FormattingBar';
+
+const STATUS_BADGE_STYLES = {
+  중요: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30',
+  검토필요: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
+  확정: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
+  질문: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30'
+};
+
+const SECTION_ACCENT_STYLES = {
+  blue: 'border-t-blue-500',
+  amber: 'border-t-amber-500',
+  purple: 'border-t-purple-500',
+  emerald: 'border-t-emerald-500',
+  zinc: 'border-t-zinc-500',
+  rose: 'border-t-rose-500'
+};
+
+function UserAvatar({ user, size = 'md' }) {
+  const sizeClass =
+    size === 'sm'
+      ? 'w-6 h-6 text-[11px]'
+      : size === 'lg'
+      ? 'w-10 h-10 text-sm'
+      : 'w-8 h-8 text-xs';
+  const initial = (user?.name || user?.email || '?').trim().charAt(0).toUpperCase();
+
+  if (user?.picture) {
+    return (
+      <img
+        src={user.picture}
+        alt={user.name || 'User'}
+        className={`${sizeClass} rounded-full object-cover shrink-0 border border-white/20`}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{ backgroundColor: user?.avatarColor || '#2563EB' }}
+      className={`${sizeClass} rounded-full text-white font-bold flex items-center justify-center shrink-0 shadow-sm select-none`}
+    >
+      {initial}
+    </div>
+  );
+}
+
+export function SharedSpacePanel({
+  api,
+  personalNotes = [],
+  onSaveToPersonalNotes,
+  showToast
+}) {
+  // 1. Auth & Room State
+  const [loadingInit, setLoadingInit] = useState(true);
+  const [googleAccount, setGoogleAccount] = useState(null);
+  const [hasOAuthClientId, setHasOAuthClientId] = useState(false);
+  const [oauthClientIdInput, setOauthClientIdInput] = useState('');
+  const [oauthClientSecretInput, setOauthClientSecretInput] = useState('');
+  const [showOAuthSetup, setShowOAuthSetup] = useState(false);
+
+  // Quick Google Login inputs
+  const [googleEmailInput, setGoogleEmailInput] = useState('');
+  const [googleNameInput, setGoogleNameInput] = useState('');
+  const [oauthLoading, setOauthLoading] = useState(false);
+
+  // Lobby inputs (Host / Join)
+  const [recentRooms, setRecentRooms] = useState([]);
+  const [hostRoomName, setHostRoomName] = useState('');
+  const [hostPassword, setHostPassword] = useState('');
+  const [hostPermissionMode, setHostPermissionMode] = useState('all');
+  const [joinRoomName, setJoinRoomName] = useState('');
+  const [joinPassword, setJoinPassword] = useState('');
+  const [joinHostCode, setJoinHostCode] = useState('');
+  const [roomActionBusy, setRoomActionBusy] = useState(false);
+
+  // Active Room State
+  const [activeRoom, setActiveRoom] = useState(null);
+  const [viewMode, setViewMode] = useState('board'); // 'board' | 'grid' | 'checklist'
+  const [selectedFolderId, setSelectedFolderId] = useState('all-notes');
+  const [roomSearch, setRoomSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Smart Organization: Multi-select & Merge
+  const [selectedNoteIds, setSelectedNoteIds] = useState([]);
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const [mergeTitle, setMergeTitle] = useState('');
+  const [mergeRemoveOriginals, setMergeRemoveOriginals] = useState(false);
+
+  // New / Edit Shared Note Modal
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [editingNote, setEditingNote] = useState(null);
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteSectionId, setNoteSectionId] = useState('idea');
+  const [noteFolderId, setNoteFolderId] = useState('all-notes');
+  const [noteStatusBadge, setNoteStatusBadge] = useState('');
+  const [noteTagsInput, setNoteTagsInput] = useState('');
+  const [notePinned, setNotePinned] = useState(false);
+  const [noteImage, setNoteImage] = useState('');
+  const [noteChecklist, setNoteChecklist] = useState([]);
+  const [newCheckItemText, setNewCheckItemText] = useState('');
+  const noteEditorRef = useRef(null);
+
+  // Viewing Shared Note Detail Modal
+  const [viewingSharedNote, setViewingSharedNote] = useState(null);
+
+  // Personal Note Picker Modal (Import from personal notes)
+  const [showPersonalPicker, setShowPersonalPicker] = useState(false);
+
+  // Section / Folder creation inputs
+  const [showNewSectionInput, setShowNewSectionInput] = useState(false);
+  const [newSectionTitle, setNewSectionTitle] = useState('');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+
+  // Chat Panel State
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatInput, setChatInput] = useState('');
+  const [chatImage, setChatImage] = useState('');
+  const [chatShareNoteRef, setChatShareNoteRef] = useState(null);
+  const [showChatNotePicker, setShowChatNotePicker] = useState(false);
+  const [showMembersPopover, setShowMembersPopover] = useState(false);
+  const chatEndRef = useRef(null);
+
+  // Drag & Drop state for Kanban sections
+  const [draggedNoteId, setDraggedNoteId] = useState(null);
+  const [dragOverSectionId, setDragOverSectionId] = useState(null);
+
+  // Load initial state & subscribe to real-time updates
+  useEffect(() => {
+    let mounted = true;
+    async function initShared() {
+      if (!api?.getSharedState) {
+        setLoadingInit(false);
+        return;
+      }
+      const res = await api.getSharedState();
+      if (mounted && res?.ok) {
+        setGoogleAccount(res.googleAccount || null);
+        setHasOAuthClientId(Boolean(res.hasOAuthClientId));
+        setOauthClientIdInput(res.oauthClientId || '');
+        setRecentRooms(res.recentRooms || []);
+        setActiveRoom(res.activeRoom || null);
+      }
+      if (mounted) setLoadingInit(false);
+    }
+    initShared();
+
+    const unsubRoom = api?.onSharedRoomUpdated
+      ? api.onSharedRoomUpdated((snapshot) => {
+          if (mounted) {
+            setActiveRoom(snapshot);
+          }
+        })
+      : null;
+
+    const unsubDisc = api?.onSharedRoomDisconnected
+      ? api.onSharedRoomDisconnected((info) => {
+          if (mounted) {
+            setActiveRoom(null);
+            showToast?.(info?.reason || '공유 방 연결이 종료되었습니다.', 'info');
+          }
+        })
+      : null;
+
+    const unsubAuth = api?.onSharedAuthUpdated
+      ? api.onSharedAuthUpdated((info) => {
+          if (mounted && info?.googleAccount) {
+            setGoogleAccount(info.googleAccount);
+          }
+        })
+      : null;
+
+    return () => {
+      mounted = false;
+      if (unsubRoom) unsubRoom();
+      if (unsubDisc) unsubDisc();
+      if (unsubAuth) unsubAuth();
+    };
+  }, [api, showToast]);
+
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (chatOpen && chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeRoom?.messages?.length, chatOpen]);
+
+  // Keep viewingSharedNote in sync with room updates
+  useEffect(() => {
+    if (viewingSharedNote && activeRoom?.notes) {
+      const updated = activeRoom.notes.find((n) => n.id === viewingSharedNote.id);
+      if (updated) setViewingSharedNote(updated);
+    }
+  }, [activeRoom?.notes, viewingSharedNote]);
+
+  // ============================================================================
+  // Handlers: Google Authentication
+  // ============================================================================
+  const handleQuickGoogleLogin = async (e) => {
+    e.preventDefault();
+    if (!api?.signInGoogleProfile) return;
+    const res = await api.signInGoogleProfile({
+      email: googleEmailInput,
+      name: googleNameInput
+    });
+    if (res?.ok) {
+      setGoogleAccount(res.googleAccount);
+      showToast?.(`${res.googleAccount.name} (${res.googleAccount.email}) 계정으로 로그인되었습니다 ✓`, 'success');
+    } else {
+      showToast?.(res?.error || 'Google 로그인에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleBrowserOAuthLogin = async () => {
+    if (!api?.startGoogleOAuthLogin) return;
+    setOauthLoading(true);
+    try {
+      const res = await api.startGoogleOAuthLogin();
+      if (res?.ok && res.googleAccount) {
+        setGoogleAccount(res.googleAccount);
+        showToast?.(`Google 공식 인증 완료: ${res.googleAccount.name} ✓`, 'success');
+      } else if (res?.needsConfig) {
+        setShowOAuthSetup(true);
+        showToast?.('Google Cloud Client ID를 먼저 입력하거나 아래 이메일 로그인을 이용해 주세요.', 'info');
+      } else if (res?.error) {
+        showToast?.(res.error, 'error');
+      }
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleSaveOAuthConfig = async (e) => {
+    e.preventDefault();
+    if (!api?.saveGoogleOAuthConfig) return;
+    const res = await api.saveGoogleOAuthConfig({
+      clientId: oauthClientIdInput,
+      clientSecret: oauthClientSecretInput
+    });
+    if (res?.ok) {
+      setHasOAuthClientId(Boolean(res.hasOAuthClientId));
+      setShowOAuthSetup(false);
+      showToast?.('Google OAuth 설정이 저장되었습니다 ✓', 'success');
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    if (!api?.signOutGoogle) return;
+    await api.signOutGoogle();
+    setGoogleAccount(null);
+    setActiveRoom(null);
+    showToast?.('Google 계정에서 로그아웃되었습니다.', 'info');
+  };
+
+  // ============================================================================
+  // Handlers: Host / Join / Leave Room
+  // ============================================================================
+  const handleHostRoom = async (e) => {
+    e.preventDefault();
+    if (!api?.hostSharedRoom || roomActionBusy) return;
+    setRoomActionBusy(true);
+    try {
+      const res = await api.hostSharedRoom({
+        roomName: hostRoomName,
+        password: hostPassword,
+        permissionMode: hostPermissionMode
+      });
+      if (res?.ok && res.room) {
+        setActiveRoom(res.room);
+        const stateRes = await api.getSharedState();
+        if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        showToast?.(`'${res.room.roomName}' 방 호스트를 시작했습니다 ✓`, 'success');
+      } else {
+        showToast?.(res?.error || '방 생성에 실패했습니다.', 'error');
+      }
+    } finally {
+      setRoomActionBusy(false);
+    }
+  };
+
+  const handleJoinRoom = async (e) => {
+    e.preventDefault();
+    if (!api?.joinSharedRoom || roomActionBusy) return;
+    setRoomActionBusy(true);
+    try {
+      const res = await api.joinSharedRoom({
+        roomName: joinRoomName,
+        password: joinPassword,
+        hostCode: joinHostCode
+      });
+      if (res?.ok && res.room) {
+        setActiveRoom(res.room);
+        const stateRes = await api.getSharedState();
+        if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        showToast?.(`'${res.room.roomName}' 방에 입장했습니다 ✓`, 'success');
+      } else {
+        showToast?.(res?.error || '방 입장에 실패했습니다.', 'error');
+      }
+    } finally {
+      setRoomActionBusy(false);
+    }
+  };
+
+  const handleLeaveRoom = async () => {
+    if (!api?.leaveSharedRoom) return;
+    await api.leaveSharedRoom();
+    setActiveRoom(null);
+    setSelectedNoteIds([]);
+    showToast?.('방에서 나왔습니다.', 'info');
+  };
+
+  const handleCopyInviteInfo = async () => {
+    if (!activeRoom) return;
+    const text = `[나무 노트 공유 방 초대]\n• 방 이름: ${activeRoom.roomName}\n• 초대 코드: ${activeRoom.inviteCode || '같은 네트워크 자동 탐색'}`;
+    if (api?.writeSystemClipboard) {
+      await api.writeSystemClipboard({ text });
+    } else {
+      navigator.clipboard?.writeText(text);
+    }
+    showToast?.('방 이름과 초대 코드가 복사되었습니다 ✓', 'success');
+  };
+
+  // ============================================================================
+  // Handlers: Shared Notes CRUD & Smart Organization
+  // ============================================================================
+  const openCreateNoteModal = (defaultSectionId = 'idea') => {
+    setEditingNote(null);
+    setNoteTitle('');
+    setNoteSectionId(defaultSectionId);
+    setNoteFolderId(selectedFolderId === 'all-notes' ? 'meeting' : selectedFolderId);
+    setNoteStatusBadge('');
+    setNoteTagsInput('');
+    setNotePinned(false);
+    setNoteImage('');
+    setNoteChecklist([]);
+    setNewCheckItemText('');
+    setShowNoteModal(true);
+    setTimeout(() => {
+      if (noteEditorRef.current) noteEditorRef.current.innerHTML = '';
+    }, 30);
+  };
+
+  const openEditNoteModal = (note) => {
+    setEditingNote(note);
+    setNoteTitle(note.title || '');
+    setNoteSectionId(note.sectionId || 'idea');
+    setNoteFolderId(note.folderId || 'all-notes');
+    setNoteStatusBadge(note.statusBadge || '');
+    setNoteTagsInput((note.tags || []).join(', '));
+    setNotePinned(Boolean(note.pinned));
+    setNoteImage(note.imageDataUrl || '');
+    setNoteChecklist(Array.isArray(note.checklist) ? [...note.checklist] : []);
+    setNewCheckItemText('');
+    setShowNoteModal(true);
+    setTimeout(() => {
+      if (noteEditorRef.current) {
+        noteEditorRef.current.innerHTML = normalizeContentToSafeHtml(note.content || '');
+      }
+    }, 30);
+  };
+
+  const handleAddChecklistItem = () => {
+    const trimmed = newCheckItemText.trim();
+    if (!trimmed) return;
+    setNoteChecklist((prev) => [
+      ...prev,
+      { id: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text: trimmed, done: false }
+    ]);
+    setNewCheckItemText('');
+  };
+
+  const handleSaveSharedNote = async (e) => {
+    e.preventDefault();
+    const rawHtml = noteEditorRef.current ? noteEditorRef.current.innerHTML : '';
+    const safeHtml = sanitizeNoteHtml(rawHtml);
+    const plain = getPlainText(safeHtml);
+
+    if (!noteTitle.trim() && !plain && !noteImage && noteChecklist.length === 0) {
+      showToast?.('노트 제목이나 본문, 체크리스트 중 하나를 입력해 주세요.', 'error');
+      return;
+    }
+
+    const parsedTags = noteTagsInput
+      .split(/[,#\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    const sectionObj = (activeRoom?.sections || []).find((s) => s.id === noteSectionId);
+
+    const payload = {
+      id: editingNote?.id,
+      title: noteTitle.trim() || plain.slice(0, 40) || '공유 노트',
+      content: safeHtml,
+      category: sectionObj?.title || '💡 아이디어',
+      sectionId: noteSectionId,
+      folderId: noteFolderId,
+      statusBadge: noteStatusBadge,
+      checklist: noteChecklist,
+      tags: parsedTags,
+      pinned: notePinned,
+      imageDataUrl: noteImage
+    };
+
+    const res = await api.dispatchSharedAction({
+      type: editingNote ? 'UPDATE_NOTE' : 'ADD_NOTE',
+      note: payload
+    });
+
+    if (res?.ok) {
+      setShowNoteModal(false);
+      setEditingNote(null);
+      showToast?.(editingNote ? '공유 노트가 수정되었습니다 ✓' : '새 공유 노트가 등록되었습니다 ✓', 'success');
+    } else {
+      showToast?.(res?.error || '저장에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleDeleteSharedNote = async (noteId) => {
+    if (!window.confirm('이 공유 노트를 방에서 삭제하시겠습니까?')) return;
+    const res = await api.dispatchSharedAction({
+      type: 'DELETE_NOTE',
+      noteId
+    });
+    if (res?.ok) {
+      if (viewingSharedNote?.id === noteId) setViewingSharedNote(null);
+      setSelectedNoteIds((prev) => prev.filter((id) => id !== noteId));
+      showToast?.('공유 노트가 삭제되었습니다.', 'info');
+    } else {
+      showToast?.(res?.error || '삭제 권한이 없습니다.', 'error');
+    }
+  };
+
+  const handleToggleChecklistItem = async (noteId, itemId) => {
+    await api.dispatchSharedAction({
+      type: 'TOGGLE_CHECKLIST_ITEM',
+      noteId,
+      itemId
+    });
+  };
+
+  const handleMoveNotes = async (noteIds, { sectionId, folderId, statusBadge }) => {
+    const res = await api.dispatchSharedAction({
+      type: 'MOVE_NOTES',
+      noteIds,
+      sectionId,
+      folderId,
+      statusBadge
+    });
+    if (res?.ok) {
+      setSelectedNoteIds([]);
+      showToast?.('노트 분류가 변경되었습니다 ✓', 'success');
+    } else {
+      showToast?.(res?.error || '변경에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleExecuteSmartMerge = async (e) => {
+    e.preventDefault();
+    if (selectedNoteIds.length < 2) return;
+    const res = await api.dispatchSharedAction({
+      type: 'MERGE_NOTES',
+      noteIds: selectedNoteIds,
+      mergedTitle: mergeTitle,
+      removeOriginal: mergeRemoveOriginals,
+      targetSectionId: 'done',
+      targetFolderId: selectedFolderId === 'all-notes' ? 'meeting' : selectedFolderId
+    });
+    if (res?.ok) {
+      setShowMergeModal(false);
+      setSelectedNoteIds([]);
+      setMergeTitle('');
+      showToast?.(`선택한 노트 ${selectedNoteIds.length}개를 하나로 깔끔하게 병합했습니다 ✓`, 'success');
+    } else {
+      showToast?.(res?.error || '병합에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleSharePersonalNoteToRoom = async (personalNote) => {
+    const res = await api.dispatchSharedAction({
+      type: 'ADD_NOTE',
+      note: {
+        title: personalNote.title || '내 노트에서 공유됨',
+        content: personalNote.content || '',
+        sectionId: 'idea',
+        folderId: selectedFolderId === 'all-notes' ? 'reference' : selectedFolderId,
+        statusBadge: '',
+        tags: personalNote.tags || [],
+        imageDataUrl: personalNote.imageDataUrl || ''
+      }
+    });
+    if (res?.ok) {
+      setShowPersonalPicker(false);
+      showToast?.(`'${personalNote.title}' 노트를 공유 방에 게시했습니다 ✓`, 'success');
+    } else {
+      showToast?.(res?.error || '공유에 실패했습니다.', 'error');
+    }
+  };
+
+  // ============================================================================
+  // Handlers: Sections & Folders Management
+  // ============================================================================
+  const handleAddSection = async (e) => {
+    e.preventDefault();
+    if (!newSectionTitle.trim()) return;
+    const res = await api.dispatchSharedAction({
+      type: 'ADD_SECTION',
+      title: newSectionTitle.trim(),
+      color: 'blue'
+    });
+    if (res?.ok) {
+      setNewSectionTitle('');
+      setShowNewSectionInput(false);
+    } else {
+      showToast?.(res?.error || '섹션 추가 실패', 'error');
+    }
+  };
+
+  const handleAddFolder = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    const res = await api.dispatchSharedAction({
+      type: 'ADD_FOLDER',
+      name: newFolderName.trim(),
+      icon: '📁'
+    });
+    if (res?.ok) {
+      setNewFolderName('');
+      setShowNewFolderInput(false);
+    } else {
+      showToast?.(res?.error || '폴더 추가 실패', 'error');
+    }
+  };
+
+  // ============================================================================
+  // Handlers: Real-Time Group Chat & Promote to Note
+  // ============================================================================
+  const handleSendChat = async (e) => {
+    e?.preventDefault();
+    if (!chatInput.trim() && !chatImage && !chatShareNoteRef) return;
+    const res = await api.dispatchSharedAction({
+      type: 'SEND_CHAT',
+      message: {
+        text: chatInput.trim(),
+        imageDataUrl: chatImage,
+        sharedNoteRef: chatShareNoteRef
+      }
+    });
+    if (res?.ok) {
+      setChatInput('');
+      setChatImage('');
+      setChatShareNoteRef(null);
+    } else {
+      showToast?.(res?.error || '메시지 전송 실패', 'error');
+    }
+  };
+
+  const handlePromoteChatToNote = async (messageId) => {
+    const res = await api.dispatchSharedAction({
+      type: 'PROMOTE_CHAT_TO_NOTE',
+      messageId,
+      sectionId: 'idea',
+      folderId: selectedFolderId === 'all-notes' ? 'meeting' : selectedFolderId
+    });
+    if (res?.ok) {
+      showToast?.('채팅 메시지를 공유 노트로 박제했습니다 📌', 'success');
+    } else {
+      showToast?.(res?.error || '노트 박제 실패', 'error');
+    }
+  };
+
+  const handleChatPaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            setChatImage(reader.result);
+          }
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+    }
+  };
+
+  // Filtered Shared Notes
+  const filteredRoomNotes = useMemo(() => {
+    const list = activeRoom?.notes || [];
+    const q = roomSearch.trim().toLowerCase();
+    return list.filter((n) => {
+      if (selectedFolderId !== 'all-notes' && n.folderId !== selectedFolderId) {
+        return false;
+      }
+      if (statusFilter !== 'all' && n.statusBadge !== statusFilter) {
+        return false;
+      }
+      if (!q) return true;
+      const plain = getPlainText(n.content || '').toLowerCase();
+      const title = (n.title || '').toLowerCase();
+      const tags = (n.tags || []).join(' ').toLowerCase();
+      const authorName = (n.author?.name || '').toLowerCase();
+      return (
+        title.includes(q) || plain.includes(q) || tags.includes(q) || authorName.includes(q)
+      );
+    });
+  }, [activeRoom?.notes, selectedFolderId, statusFilter, roomSearch]);
+
+  if (loadingInit) {
+    return (
+      <div className="p-12 text-center text-sm text-zinc-400">
+        공유 스페이스 불러오는 중...
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // VIEW 1: Google Account Login Gate (!googleAccount)
+  // ============================================================================
+  if (!googleAccount) {
+    return (
+      <div className="max-w-xl mx-auto my-6 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm p-7 flex flex-col gap-6">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+            <svg width="24" height="24" viewBox="0 0 48 48">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+          </div>
+          <div>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              Google Account Required
+            </span>
+            <h2 className="text-lg font-extrabold text-zinc-900 dark:text-zinc-100">
+              공유 스페이스 Google 계정 로그인
+            </h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+              공유 방 호스트, 그룹 노트 정리, 실시간 채팅을 사용하려면 Google 계정으로 로그인해 주세요.
+            </p>
+          </div>
+        </div>
+
+        {/* 빠른 Google 계정 연결 폼 */}
+        <form onSubmit={handleQuickGoogleLogin} className="flex flex-col gap-3.5 bg-canvas-light dark:bg-canvas-dark p-4 rounded-xl border border-line-light dark:border-line-dark">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+              ⚡ Google 계정으로 바로 시작하기
+            </span>
+            <span className="text-[11px] text-zinc-400">별도 콘솔 설정 없이 즉시 사용</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-zinc-500">Google 이메일 (@gmail.com)</label>
+              <input
+                type="email"
+                required
+                value={googleEmailInput}
+                onChange={(e) => setGoogleEmailInput(e.target.value)}
+                placeholder="example@gmail.com"
+                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-zinc-500">표시 이름 (프로필명)</label>
+              <input
+                type="text"
+                required
+                value={googleNameInput}
+                onChange={(e) => setGoogleNameInput(e.target.value)}
+                placeholder="홍길동"
+                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
+          >
+            <span>Google 계정 프로필로 로그인</span>
+          </button>
+        </form>
+
+        {/* 브라우저 OAuth 2.0 공식 인증 버튼 & 설정 */}
+        <div className="flex flex-col gap-2.5 pt-1 border-t border-line-light dark:border-line-dark">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={handleBrowserOAuthLogin}
+              disabled={oauthLoading}
+              className="flex-1 py-2.5 px-4 rounded-xl bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-800 dark:text-zinc-200 transition-colors flex items-center justify-center gap-2"
+            >
+              <span>🌐 {oauthLoading ? '브라우저 인증 대기 중...' : '웹 브라우저로 Google OAuth 공식 로그인'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowOAuthSetup((v) => !v)}
+              className="py-2.5 px-3 rounded-xl bg-muted-light dark:bg-muted-dark text-xs font-semibold text-zinc-600 dark:text-zinc-300 border border-line-light dark:border-line-dark"
+              title="Google Cloud OAuth Client ID 설정"
+            >
+              ⚙️ OAuth 설정
+            </button>
+          </div>
+
+          {showOAuthSetup && (
+            <form onSubmit={handleSaveOAuthConfig} className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2.5 text-xs">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                Google Cloud Console에서 발급받은 <b>데스크톱 앱(Desktop App) OAuth Client ID</b>를 등록하면 크롬/엣지 브라우저를 통한 공식 OAuth 2.0 PKCE 로그인이 작동합니다.
+              </p>
+              <input
+                type="text"
+                value={oauthClientIdInput}
+                onChange={(e) => setOauthClientIdInput(e.target.value)}
+                placeholder="xxx.apps.googleusercontent.com (Client ID)"
+                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
+              />
+              <input
+                type="password"
+                value={oauthClientSecretInput}
+                onChange={(e) => setOauthClientSecretInput(e.target.value)}
+                placeholder="Client Secret (선택 사항)"
+                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="submit"
+                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold"
+                >
+                  Client ID 저장
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // VIEW 2: Room Lobby (Create/Host a Room or Join with Room Name + Password)
+  // ============================================================================
+  if (!activeRoom) {
+    return (
+      <div className="flex flex-col gap-5">
+        {/* 상단 내 Google 계정 프로필 바 */}
+        <div className="bg-surface-light dark:bg-surface-dark p-4 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <UserAvatar user={googleAccount} size="lg" />
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                  {googleAccount.name}
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                  Google 인증됨
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{googleAccount.email}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleGoogleLogout}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-600 dark:text-zinc-300 bg-muted-light dark:bg-muted-dark hover:bg-red-500/10 hover:text-red-500 border border-line-light dark:border-line-dark transition-colors"
+          >
+            계정 전환 / 로그아웃
+          </button>
+        </div>
+
+        {/* 방 호스트하기 vs 방 참가하기 2단 카드 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* 1) 방 호스트하기 (방 만들기) */}
+          <form
+            onSubmit={handleHostRoom}
+            className="bg-surface-light dark:bg-surface-dark p-6 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col justify-between gap-4"
+          >
+            <div className="flex flex-col gap-3.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold px-2.5 py-1 rounded-md bg-blue-600/10 text-blue-600 dark:text-blue-400">
+                  🏠 HOST A ROOM
+                </span>
+                <span className="text-[11px] text-zinc-400">AES-256 종단간 암호화</span>
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                  새 공유 방 호스트하기 (방 만들기)
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  방 이름과 비밀번호를 정해 그룹 스페이스를 엽니다. 이전에 만든 방 이름을 입력하면 기존 데이터가 그대로 복원됩니다.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 이름</label>
+                <input
+                  type="text"
+                  required
+                  value={hostRoomName}
+                  onChange={(e) => setHostRoomName(e.target.value)}
+                  placeholder="예: 디자인팀 회의방, 스터디 노트"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 비밀번호</label>
+                <input
+                  type="password"
+                  required
+                  value={hostPassword}
+                  onChange={(e) => setHostPassword(e.target.value)}
+                  placeholder="입장 및 암호화에 사용할 비밀번호 (2자 이상)"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">멤버 편집 권한</label>
+                <select
+                  value={hostPermissionMode}
+                  onChange={(e) => setHostPermissionMode(e.target.value)}
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                >
+                  <option value="all">모두 노트 작성 · 편집 · 삭제 가능 (공동 작업)</option>
+                  <option value="host-delete">모두 작성 · 편집 가능 / 삭제는 호스트와 본인만</option>
+                  <option value="readonly">호스트만 노트 편집 가능 / 멤버는 열람 및 채팅만 (공지방)</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={roomActionBusy}
+              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors mt-2"
+            >
+              {roomActionBusy ? '방 준비 중...' : '🚀 방 호스트 시작하기'}
+            </button>
+          </form>
+
+          {/* 2) 방 참가하기 (방 이름 + 비밀번호로 입장) */}
+          <form
+            onSubmit={handleJoinRoom}
+            className="bg-surface-light dark:bg-surface-dark p-6 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col justify-between gap-4"
+          >
+            <div className="flex flex-col gap-3.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-600/10 text-emerald-600 dark:text-emerald-400">
+                  🔑 JOIN A ROOM
+                </span>
+                <span className="text-[11px] text-zinc-400">방 이름 + 비밀번호 입장</span>
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                  열려 있는 공유 방 들어가기
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  호스트가 알려준 방 이름과 비밀번호를 입력해 입장하세요.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 이름</label>
+                <input
+                  type="text"
+                  required
+                  value={joinRoomName}
+                  onChange={(e) => setJoinRoomName(e.target.value)}
+                  placeholder="입장할 방 이름 입력"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 비밀번호</label>
+                <input
+                  type="password"
+                  required
+                  value={joinPassword}
+                  onChange={(e) => setJoinPassword(e.target.value)}
+                  placeholder="방 비밀번호 입력"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                  초대 코드 / 호스트 주소 <span className="text-[11px] font-normal text-zinc-400">(같은 공유기·내 PC에서는 비워두어도 자동 연결)</span>
+                </label>
+                <input
+                  type="text"
+                  value={joinHostCode}
+                  onChange={(e) => setJoinHostCode(e.target.value)}
+                  placeholder="선택 사항: 다른 네트워크일 때 초대 코드 입력"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={roomActionBusy}
+              className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors mt-2"
+            >
+              {roomActionBusy ? '방 찾는 중...' : '✨ 방 입장하기'}
+            </button>
+          </form>
+        </div>
+
+        {/* 최근 호스트/참여했던 방 목록 */}
+        {recentRooms.length > 0 && (
+          <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+              🕒 최근 사용한 공유 방 (클릭하여 방 이름 자동 입력)
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+              {recentRooms.map((r) => (
+                <button
+                  key={r.roomId}
+                  type="button"
+                  onClick={() => {
+                    if (r.isHost) {
+                      setHostRoomName(r.roomName);
+                    } else {
+                      setJoinRoomName(r.roomName);
+                      setJoinHostCode(r.hostCode || '');
+                    }
+                    showToast?.(`'${r.roomName}' 방 정보가 입력칸에 채워졌습니다. 비밀번호를 입력해 주세요.`, 'info');
+                  }}
+                  className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:border-blue-500/50 border border-line-light dark:border-line-dark text-left flex items-center justify-between gap-2 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                      {r.roomName}
+                    </div>
+                    <div className="text-[11px] text-zinc-400">
+                      {r.isHost ? '내가 호스트한 방' : '참여했던 방'}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 shrink-0">
+                    선택
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // VIEW 3: Active Shared Room Workspace (Notes Board + Smart Organizer + Chat)
+  // ============================================================================
+  const isHost = activeRoom.mode === 'host' || activeRoom.hostProfile?.uid === googleAccount.uid;
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* 1. 상단 방 컨트롤 헤더 */}
+      <div className="bg-surface-light dark:bg-surface-dark px-5 py-3.5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center shadow-sm shrink-0">
+            👥
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                {activeRoom.roomName}
+              </h2>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                  isHost
+                    ? 'bg-blue-600/15 text-blue-600 dark:text-blue-400 border border-blue-500/30'
+                    : 'bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                }`}
+              >
+                {isHost ? '👑 호스트(방장)' : '🟢 참여 멤버'}
+              </span>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
+                {activeRoom.permissionMode === 'readonly'
+                  ? '🔒 읽기 전용(공지방)'
+                  : activeRoom.permissionMode === 'host-delete'
+                  ? '🛡️ 호스트 삭제 보호'
+                  : '✏️ 모두 편집 가능'}
+              </span>
+            </div>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+              방장: {activeRoom.hostProfile?.name} ({activeRoom.hostProfile?.email}) · 암호화 동기화 중
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* 접속 멤버 보기 & 권한 관리 */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMembersPopover((v) => !v)}
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-2"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span>멤버 {(activeRoom.members || []).length}명</span>
+            </button>
+
+            {showMembersPopover && (
+              <div className="absolute right-0 mt-2 w-72 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-2">
+                  <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                    접속 중인 Google 멤버
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowMembersPopover(false)}
+                    className="text-xs text-zinc-400 hover:text-zinc-600"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+                  {(activeRoom.members || []).map((m) => (
+                    <div key={m.uid} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <UserAvatar user={m} size="sm" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                            {m.name} {m.isHost && '👑'}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 truncate">{m.email}</div>
+                        </div>
+                      </div>
+                      {isHost && !m.isHost && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            api.dispatchSharedAction({ type: 'KICK_MEMBER', targetUid: m.uid })
+                          }
+                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white"
+                        >
+                          내보내기
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {isHost && (
+                  <div className="pt-2 border-t border-line-light dark:border-line-dark flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-zinc-400">방 편집 권한 변경</label>
+                    <select
+                      value={activeRoom.permissionMode || 'all'}
+                      onChange={(e) =>
+                        api.dispatchSharedAction({
+                          type: 'SET_PERMISSION_MODE',
+                          permissionMode: e.target.value
+                        })
+                      }
+                      className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                    >
+                      <option value="all">모두 편집 가능</option>
+                      <option value="host-delete">호스트만 삭제 가능</option>
+                      <option value="readonly">읽기 전용 (호스트만 작성)</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleCopyInviteInfo}
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200"
+            title="방 이름과 초대 코드 복사"
+          >
+            🔗 초대 코드 복사
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setChatOpen((v) => !v)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
+              chatOpen
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 border-line-light dark:border-line-dark'
+            }`}
+          >
+            💬 그룹 채팅 ({(activeRoom.messages || []).length})
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLeaveRoom}
+            className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors"
+          >
+            방 나가기
+          </button>
+        </div>
+      </div>
+
+      {/* 2. 폴더(컬렉션) 정리 바 + 뷰 스위치 + 검색 + 액션 버튼 */}
+      <div className="bg-surface-light dark:bg-surface-dark p-3.5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3">
+        {/* 상단 줄: 폴더 탭 & 새 폴더 */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {(activeRoom.folders || []).map((folder) => {
+              const active = selectedFolderId === folder.id;
+              return (
+                <button
+                  key={folder.id}
+                  type="button"
+                  onClick={() => setSelectedFolderId(folder.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 ${
+                    active
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 shadow-sm'
+                      : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
+                  }`}
+                >
+                  <span>{folder.icon || '📁'}</span>
+                  <span>{folder.name}</span>
+                </button>
+              );
+            })}
+
+            {showNewFolderInput ? (
+              <form onSubmit={handleAddFolder} className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="새 폴더명"
+                  autoFocus
+                  className="px-2.5 py-1 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs text-zinc-900 dark:text-white outline-none w-28"
+                />
+                <button type="submit" className="px-2 py-1 rounded-lg bg-blue-600 text-white text-xs font-bold">
+                  추가
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowNewFolderInput(false)}
+                  className="px-1.5 py-1 text-xs text-zinc-400"
+                >
+                  ✕
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowNewFolderInput(true)}
+                className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
+              >
+                + 폴더 추가
+              </button>
+            )}
+          </div>
+
+          {/* 우측: 새 공유 노트 작성 & 내 노트 불러오기 */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPersonalPicker(true)}
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200"
+            >
+              📤 내 노트에서 불러오기
+            </button>
+            <button
+              type="button"
+              onClick={() => openCreateNoteModal('idea')}
+              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
+            >
+              + 새 공유 노트 작성
+            </button>
+          </div>
+        </div>
+
+        {/* 하단 줄: 정리 뷰 모드 전환 + 상태 배지 필터 + 검색창 */}
+        <div className="flex items-center justify-between gap-3 flex-wrap pt-2 border-t border-line-light dark:border-line-dark">
+          <div className="flex items-center gap-1 bg-canvas-light dark:bg-canvas-dark p-1 rounded-xl border border-line-light dark:border-line-dark">
+            <button
+              type="button"
+              onClick={() => setViewMode('board')}
+              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+                viewMode === 'board'
+                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-zinc-500'
+              }`}
+            >
+              🗂️ 섹션 보드 뷰
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+                viewMode === 'grid'
+                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-zinc-500'
+              }`}
+            >
+              📋 카드 그리드 뷰
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('checklist')}
+              className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+                viewMode === 'checklist'
+                  ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-zinc-500'
+              }`}
+            >
+              ☑️ 체크리스트 모아보기
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-2.5 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-700 dark:text-zinc-200 outline-none"
+            >
+              <option value="all">상태: 전체</option>
+              <option value="중요">🔥 중요</option>
+              <option value="검토필요">🧐 검토필요</option>
+              <option value="확정">✅ 확정</option>
+              <option value="질문">❓ 질문</option>
+            </select>
+            <input
+              type="search"
+              value={roomSearch}
+              onChange={(e) => setRoomSearch(e.target.value)}
+              placeholder="공유 노트 제목, 본문, 작성자 검색..."
+              className="flex-1 px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* 3. 다중 선택 스마트 정리 & 병합 바 (Smart Merge Bar) */}
+      {selectedNoteIds.length > 0 && (
+        <div className="bg-blue-600 text-white px-4 py-2.5 rounded-2xl shadow-md flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs font-bold">
+            <span>✨ {selectedNoteIds.length}개의 공유 노트가 선택됨</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {selectedNoteIds.length >= 2 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMergeTitle('');
+                  setMergeRemoveOriginals(false);
+                  setShowMergeModal(true);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white text-blue-600 text-xs font-extrabold shadow-sm hover:bg-blue-50"
+              >
+                🔗 선택 노트 하나로 합치기 (스마트 병합)
+              </button>
+            )}
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  handleMoveNotes(selectedNoteIds, { sectionId: e.target.value });
+                  e.target.value = '';
+                }
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-white text-xs font-bold outline-none border border-white/20"
+            >
+              <option value="" disabled>
+                섹션 일괄 이동...
+              </option>
+              {(activeRoom.sections || []).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  handleMoveNotes(selectedNoteIds, { folderId: e.target.value });
+                  e.target.value = '';
+                }
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-white text-xs font-bold outline-none border border-white/20"
+            >
+              <option value="" disabled>
+                폴더 일괄 이동...
+              </option>
+              {(activeRoom.folders || []).map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setSelectedNoteIds([])}
+              className="px-2.5 py-1.5 rounded-lg bg-blue-800/60 hover:bg-blue-800 text-xs font-bold"
+            >
+              선택 해제
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. 메인 영역: 좌측 공유 노트 보드 + 우측 실시간 그룹 채팅 */}
+      <div className="flex flex-col lg:flex-row gap-4 items-start">
+        {/* 좌측 공유 노트 영역 */}
+        <div className="flex-1 min-w-0 w-full">
+          {/* (A) 섹션 칸반 보드 뷰 */}
+          {viewMode === 'board' && (
+            <div className="flex gap-3.5 overflow-x-auto pb-3 items-start">
+              {(activeRoom.sections || []).map((section) => {
+                const sectionNotes = filteredRoomNotes.filter(
+                  (n) => (n.sectionId || 'idea') === section.id
+                );
+                const topBorder = SECTION_ACCENT_STYLES[section.color] || 'border-t-blue-500';
+                const isDragOver = dragOverSectionId === section.id;
+
+                return (
+                  <div
+                    key={section.id}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOverSectionId(section.id);
+                    }}
+                    onDragLeave={() => setDragOverSectionId(null)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverSectionId(null);
+                      if (draggedNoteId) {
+                        handleMoveNotes([draggedNoteId], { sectionId: section.id });
+                        setDraggedNoteId(null);
+                      }
+                    }}
+                    className={`w-[295px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark border-t-4 ${topBorder} p-3.5 flex flex-col gap-3 transition-colors ${
+                      isDragOver ? 'ring-2 ring-blue-500 bg-blue-500/5' : ''
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                          {section.title}
+                        </h3>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300">
+                          {sectionNotes.length}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openCreateNoteModal(section.id)}
+                        className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-0.5 rounded-lg"
+                        title="이 섹션에 노트 추가"
+                      >
+                        + 추가
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col gap-2.5 min-h-[120px]">
+                      {sectionNotes.length === 0 ? (
+                        <div className="py-8 text-center text-[11px] text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
+                          노트를 끌어다 놓거나 [+ 추가]를 누르세요
+                        </div>
+                      ) : (
+                        sectionNotes.map((note) => (
+                          <SharedNoteCard
+                            key={note.id}
+                            note={note}
+                            isSelected={selectedNoteIds.includes(note.id)}
+                            onToggleSelect={() =>
+                              setSelectedNoteIds((prev) =>
+                                prev.includes(note.id)
+                                  ? prev.filter((id) => id !== note.id)
+                                  : [...prev, note.id]
+                              )
+                            }
+                            onDragStart={() => setDraggedNoteId(note.id)}
+                            onView={() => setViewingSharedNote(note)}
+                            onEdit={() => openEditNoteModal(note)}
+                            onDelete={() => handleDeleteSharedNote(note.id)}
+                            onToggleCheck={(itemId) => handleToggleChecklistItem(note.id, itemId)}
+                            onSavePersonal={() => onSaveToPersonalNotes?.(note)}
+                            onShareInChat={() => {
+                              setChatOpen(true);
+                              setChatShareNoteRef({
+                                id: note.id,
+                                title: note.title,
+                                sectionId: note.sectionId,
+                                statusBadge: note.statusBadge
+                              });
+                            }}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* 새 섹션 컬럼 추가 */}
+              <div className="w-[240px] shrink-0">
+                {showNewSectionInput ? (
+                  <form
+                    onSubmit={handleAddSection}
+                    className="bg-surface-light dark:bg-surface-dark p-3.5 rounded-2xl border border-line-light dark:border-line-dark flex flex-col gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={newSectionTitle}
+                      onChange={(e) => setNewSectionTitle(e.target.value)}
+                      placeholder="예: 🧪 테스트 대기"
+                      autoFocus
+                      className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none"
+                    />
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowNewSectionInput(false)}
+                        className="px-2.5 py-1 text-xs text-zinc-400"
+                      >
+                        취소
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-3 py-1 rounded-lg bg-blue-600 text-white text-xs font-bold"
+                      >
+                        섹션 추가
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowNewSectionInput(true)}
+                    className="w-full py-3.5 px-4 rounded-2xl border border-dashed border-line-light dark:border-line-dark text-xs font-bold text-zinc-500 hover:text-blue-600 hover:border-blue-500/50 transition-colors"
+                  >
+                    + 새 보드 섹션(컬럼) 추가
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* (B) 카드 그리드 뷰 */}
+          {viewMode === 'grid' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+              {filteredRoomNotes.length === 0 ? (
+                <div className="col-span-full bg-surface-light dark:bg-surface-dark p-10 rounded-2xl border border-line-light dark:border-line-dark text-center text-xs text-zinc-400">
+                  조건에 맞는 공유 노트가 없습니다.
+                </div>
+              ) : (
+                filteredRoomNotes.map((note) => (
+                  <SharedNoteCard
+                    key={note.id}
+                    note={note}
+                    isSelected={selectedNoteIds.includes(note.id)}
+                    onToggleSelect={() =>
+                      setSelectedNoteIds((prev) =>
+                        prev.includes(note.id)
+                          ? prev.filter((id) => id !== note.id)
+                          : [...prev, note.id]
+                      )
+                    }
+                    onDragStart={() => setDraggedNoteId(note.id)}
+                    onView={() => setViewingSharedNote(note)}
+                    onEdit={() => openEditNoteModal(note)}
+                    onDelete={() => handleDeleteSharedNote(note.id)}
+                    onToggleCheck={(itemId) => handleToggleChecklistItem(note.id, itemId)}
+                    onSavePersonal={() => onSaveToPersonalNotes?.(note)}
+                    onShareInChat={() => {
+                      setChatOpen(true);
+                      setChatShareNoteRef({
+                        id: note.id,
+                        title: note.title,
+                        sectionId: note.sectionId,
+                        statusBadge: note.statusBadge
+                      });
+                    }}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {/* (C) 체크리스트 모아보기 뷰 */}
+          {viewMode === 'checklist' && (
+            <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-line-light dark:border-line-dark flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                  ☑️ 방 전체 공동 체크리스트 모아보기
+                </h3>
+                <span className="text-xs text-zinc-400">
+                  클릭하면 모든 참여자 화면에 실시간으로 완료 표시됩니다
+                </span>
+              </div>
+              {filteredRoomNotes.filter((n) => (n.checklist || []).length > 0).length === 0 ? (
+                <div className="py-8 text-center text-xs text-zinc-400">
+                  체크리스트가 포함된 공유 노트가 없습니다. 노트 작성 시 할 일 항목을 추가해 보세요!
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {filteredRoomNotes
+                    .filter((n) => (n.checklist || []).length > 0)
+                    .map((note) => {
+                      const doneCount = note.checklist.filter((c) => c.done).length;
+                      return (
+                        <div
+                          key={note.id}
+                          className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setViewingSharedNote(note)}
+                              className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 hover:text-blue-600 text-left truncate"
+                            >
+                              {note.title}
+                            </button>
+                            <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 shrink-0">
+                              {doneCount}/{note.checklist.length} 완료
+                            </span>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            {note.checklist.map((item) => (
+                              <label
+                                key={item.id}
+                                className="flex items-center gap-2 text-xs cursor-pointer select-none"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(item.done)}
+                                  onChange={() => handleToggleChecklistItem(note.id, item.id)}
+                                  className="w-3.5 h-3.5 accent-blue-600 rounded"
+                                />
+                                <span
+                                  className={
+                                    item.done
+                                      ? 'line-through text-zinc-400'
+                                      : 'text-zinc-800 dark:text-zinc-200 font-medium'
+                                  }
+                                >
+                                  {item.text}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 우측 도킹형 실시간 그룹 채팅 패널 */}
+        {chatOpen && (
+          <aside className="w-full lg:w-[340px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col h-[620px]">
+            {/* 채팅 헤더 */}
+            <div className="px-4 py-3 border-b border-line-light dark:border-line-dark flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100">
+                  💬 그룹 실시간 채팅
+                </span>
+              </div>
+              <span className="text-[11px] text-zinc-400">
+                메시지 우측 [📌박제]로 노트화
+              </span>
+            </div>
+
+            {/* 채팅 메시지 목록 */}
+            <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
+              {(activeRoom.messages || []).map((msg) => {
+                if (msg.isSystem) {
+                  return (
+                    <div key={msg.id} className="text-center my-1">
+                      <span className="text-[11px] px-2.5 py-1 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
+                        {msg.text}
+                      </span>
+                    </div>
+                  );
+                }
+
+                const isMine = msg.author?.uid === googleAccount.uid;
+                const timeStr = new Date(msg.createdAt || Date.now()).toLocaleTimeString('ko-KR', {
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+
+                return (
+                  <div
+                    key={msg.id}
+                    className={`group flex gap-2.5 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}
+                  >
+                    <UserAvatar user={msg.author} size="sm" />
+                    <div
+                      className={`max-w-[78%] flex flex-col ${
+                        isMine ? 'items-end' : 'items-start'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                          {msg.author?.name}
+                        </span>
+                        <span className="text-[10px] text-zinc-400">{timeStr}</span>
+                      </div>
+
+                      <div
+                        className={`p-3 rounded-2xl text-xs leading-relaxed break-words ${
+                          isMine
+                            ? 'bg-blue-600 text-white rounded-tr-sm'
+                            : 'bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-zinc-100 border border-line-light dark:border-line-dark rounded-tl-sm'
+                        }`}
+                      >
+                        {msg.text && <div className="whitespace-pre-wrap">{msg.text}</div>}
+                        {msg.imageDataUrl && (
+                          <img
+                            src={msg.imageDataUrl}
+                            alt="채팅 이미지"
+                            className="mt-2 rounded-lg max-h-44 object-contain bg-black/10"
+                          />
+                        )}
+                        {msg.sharedNoteRef && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target = (activeRoom.notes || []).find(
+                                (n) => n.id === msg.sharedNoteRef.id
+                              );
+                              if (target) {
+                                setViewingSharedNote(target);
+                              } else {
+                                showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
+                              }
+                            }}
+                            className={`mt-2 w-full p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
+                              isMine
+                                ? 'bg-blue-700/80 border-white/20 text-white'
+                                : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[10px] opacity-75">📄 공유 노트 바로가기</div>
+                              <div className="text-xs font-bold truncate">
+                                {msg.sharedNoteRef.title}
+                              </div>
+                            </div>
+                            <span className="text-xs shrink-0">↗</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* 채팅 메시지 -> 공유 노트로 즉시 박제 버튼 */}
+                      <div className="mt-1 flex items-center gap-2">
+                        {msg.pinnedToNoteId ? (
+                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
+                            📌 공유 노트로 등록됨
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handlePromoteChatToNote(msg.id)}
+                            className="opacity-0 group-hover:opacity-100 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline transition-opacity"
+                          >
+                            📌 노트로 박제
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* 첨부 미리보기 (이미지 또는 노트 링크 카드) */}
+            {(chatImage || chatShareNoteRef) && (
+              <div className="px-3.5 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex items-center justify-between gap-2">
+                {chatImage && (
+                  <div className="flex items-center gap-2">
+                    <img src={chatImage} alt="첨부" className="w-8 h-8 rounded object-cover" />
+                    <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">
+                      클립보드 이미지 첨부됨
+                    </span>
+                  </div>
+                )}
+                {chatShareNoteRef && (
+                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate">
+                    📄 노트 공유: {chatShareNoteRef.title}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChatImage('');
+                    setChatShareNoteRef(null);
+                  }}
+                  className="text-xs text-zinc-400 hover:text-red-500"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* 채팅 입력창 */}
+            <form
+              onSubmit={handleSendChat}
+              className="p-3 border-t border-line-light dark:border-line-dark flex flex-col gap-2"
+            >
+              <div className="flex items-center gap-1.5">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowChatNotePicker((v) => !v)}
+                    className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-[11px] font-bold text-zinc-600 dark:text-zinc-300"
+                    title="방 안의 노트 카드를 채팅에 공유"
+                  >
+                    📄 노트 공유
+                  </button>
+                  {showChatNotePicker && (
+                    <div className="absolute bottom-9 left-0 w-64 max-h-48 overflow-y-auto bg-surface-light dark:bg-surface-dark rounded-xl border border-line-light dark:border-line-dark shadow-xl p-2 z-30 flex flex-col gap-1">
+                      <div className="text-[10px] font-bold text-zinc-400 px-2 py-1">
+                        채팅에 공유할 노트 선택
+                      </div>
+                      {(activeRoom.notes || []).map((n) => (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => {
+                            setChatShareNoteRef({
+                              id: n.id,
+                              title: n.title,
+                              sectionId: n.sectionId,
+                              statusBadge: n.statusBadge
+                            });
+                            setShowChatNotePicker(false);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg hover:bg-muted-light dark:hover:bg-muted-dark text-left text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate"
+                        >
+                          {n.title}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] text-zinc-400">
+                  Ctrl+V로 이미지 전송 가능
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onPaste={handleChatPaste}
+                  placeholder="메시지 입력 (Enter 전송)..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0"
+                >
+                  전송
+                </button>
+              </div>
+            </form>
+          </aside>
+        )}
+      </div>
+
+      {/* ========================================================================
+          MODAL 1: 공유 노트 작성 / 수정 모달
+         ======================================================================== */}
+      {showNoteModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowNoteModal(false)}
+        >
+          <div
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-2xl rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                {editingNote ? '✏️ 공유 노트 수정' : '📝 새 공유 노트 작성'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowNoteModal(false)}
+                className="text-sm text-zinc-400 hover:text-zinc-600"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveSharedNote} className="flex flex-col gap-3.5">
+              <input
+                type="text"
+                value={noteTitle}
+                onChange={(e) => setNoteTitle(e.target.value)}
+                placeholder="공유 노트 제목을 입력하세요"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm font-bold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+
+              {/* 분류 선택: 섹션 / 폴더 / 상태 배지 / 상단 고정 */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-500">보드 섹션(컬럼)</label>
+                  <select
+                    value={noteSectionId}
+                    onChange={(e) => setNoteSectionId(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  >
+                    {(activeRoom.sections || []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-500">폴더(컬렉션)</label>
+                  <select
+                    value={noteFolderId}
+                    onChange={(e) => setNoteFolderId(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  >
+                    {(activeRoom.folders || []).map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.icon} {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-500">상태 배지</label>
+                  <select
+                    value={noteStatusBadge}
+                    onChange={(e) => setNoteStatusBadge(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  >
+                    <option value="">선택 안 함</option>
+                    <option value="중요">🔥 중요</option>
+                    <option value="검토필요">🧐 검토필요</option>
+                    <option value="확정">✅ 확정</option>
+                    <option value="질문">❓ 질문</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* 서식 바 + 본문 에디터 */}
+              <div className="rounded-xl border border-line-light dark:border-line-dark overflow-hidden bg-canvas-light dark:bg-canvas-dark">
+                <FormattingBar editorRef={noteEditorRef} />
+                <div
+                  ref={noteEditorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  onPaste={(e) => {
+                    const items = e.clipboardData?.items;
+                    if (items) {
+                      for (const item of items) {
+                        if (item.type.startsWith('image/')) {
+                          e.preventDefault();
+                          const file = item.getAsFile();
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            if (typeof reader.result === 'string') setNoteImage(reader.result);
+                          };
+                          reader.readAsDataURL(file);
+                          return;
+                        }
+                      }
+                    }
+                  }}
+                  data-placeholder="공유할 노트 내용을 작성하세요 (Ctrl+V로 스크린샷 이미지 첨부 가능)..."
+                  className="rich-editor min-h-[140px] max-h-[260px] overflow-y-auto p-3.5 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 outline-none"
+                />
+              </div>
+
+              {/* 이미지 첨부 미리보기 */}
+              {noteImage && (
+                <div className="p-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex items-center justify-between">
+                  <img src={noteImage} alt="첨부" className="max-h-28 rounded-lg object-contain" />
+                  <button
+                    type="button"
+                    onClick={() => setNoteImage('')}
+                    className="text-xs font-bold text-red-500 px-2.5 py-1"
+                  >
+                    이미지 제거
+                  </button>
+                </div>
+              )}
+
+              {/* 공동 체크리스트 편집 영역 */}
+              <div className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2">
+                <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                  ☑️ 공동 체크리스트 (할 일 항목)
+                </span>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newCheckItemText}
+                    onChange={(e) => setNewCheckItemText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddChecklistItem();
+                      }
+                    }}
+                    placeholder="할 일 항목 입력 후 [추가] 클릭"
+                    className="flex-1 px-3 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddChecklistItem}
+                    className="px-3 py-1.5 rounded-lg bg-muted-light dark:bg-muted-dark text-xs font-bold text-zinc-700 dark:text-zinc-200"
+                  >
+                    + 항목 추가
+                  </button>
+                </div>
+                {noteChecklist.length > 0 && (
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    {noteChecklist.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between text-xs">
+                        <span className="text-zinc-800 dark:text-zinc-200">• {item.text}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNoteChecklist((prev) => prev.filter((c) => c.id !== item.id))
+                          }
+                          className="text-zinc-400 hover:text-red-500 text-xs"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <input
+                  type="text"
+                  value={noteTagsInput}
+                  onChange={(e) => setNoteTagsInput(e.target.value)}
+                  placeholder="#태그 입력 (쉼표 구분)"
+                  className="flex-1 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
+                />
+                <label className="flex items-center gap-1.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={notePinned}
+                    onChange={(e) => setNotePinned(e.target.checked)}
+                    className="w-4 h-4 accent-blue-600"
+                  />
+                  <span>📌 상단 고정</span>
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNoteModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-500 hover:bg-muted-light dark:hover:bg-muted-dark"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
+                >
+                  {editingNote ? '수정 완료' : '공유 노트 등록'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          MODAL 2: 공유 노트 상세 리더 뷰 모달
+         ======================================================================== */}
+      {viewingSharedNote && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setViewingSharedNote(null)}
+        >
+          <div
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-2xl rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4 max-h-[88vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  {viewingSharedNote.statusBadge && (
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                        STATUS_BADGE_STYLES[viewingSharedNote.statusBadge] || ''
+                      }`}
+                    >
+                      {viewingSharedNote.statusBadge}
+                    </span>
+                  )}
+                  <span className="text-xs text-zinc-400">
+                    작성자: {viewingSharedNote.author?.name} ({viewingSharedNote.author?.email})
+                  </span>
+                </div>
+                <h3 className="text-lg font-extrabold text-zinc-900 dark:text-zinc-100">
+                  {viewingSharedNote.title}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingSharedNote(null)}
+                className="text-sm text-zinc-400 hover:text-zinc-600"
+              >
+                ✕
+              </button>
+            </div>
+
+            {viewingSharedNote.imageDataUrl && (
+              <img
+                src={viewingSharedNote.imageDataUrl}
+                alt="첨부 이미지"
+                className="max-h-72 rounded-xl object-contain bg-black/5 border border-line-light dark:border-line-dark"
+              />
+            )}
+
+            <div
+              className="prose-editor text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed bg-canvas-light dark:bg-canvas-dark p-4 rounded-xl border border-line-light dark:border-line-dark"
+              dangerouslySetInnerHTML={{
+                __html: normalizeContentToSafeHtml(viewingSharedNote.content || '')
+              }}
+            />
+
+            {(viewingSharedNote.checklist || []).length > 0 && (
+              <div className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2">
+                <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                  ☑️ 공동 체크리스트
+                </span>
+                {viewingSharedNote.checklist.map((item) => (
+                  <label
+                    key={item.id}
+                    className="flex items-center gap-2 text-xs cursor-pointer select-none"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(item.done)}
+                      onChange={() => handleToggleChecklistItem(viewingSharedNote.id, item.id)}
+                      className="w-4 h-4 accent-blue-600"
+                    />
+                    <span
+                      className={
+                        item.done
+                          ? 'line-through text-zinc-400'
+                          : 'text-zinc-800 dark:text-zinc-200 font-medium'
+                      }
+                    >
+                      {item.text}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2 border-t border-line-light dark:border-line-dark">
+              <button
+                type="button"
+                onClick={() => {
+                  onSaveToPersonalNotes?.(viewingSharedNote);
+                  setViewingSharedNote(null);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+              >
+                📥 내 개인 노트로 복사 저장
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const n = viewingSharedNote;
+                    setViewingSharedNote(null);
+                    openEditNoteModal(n);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+                >
+                  수정하기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteSharedNote(viewingSharedNote.id)}
+                  className="px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white text-xs font-bold"
+                >
+                  삭제
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          MODAL 3: 선택 노트 스마트 병합 (Smart Merge) 모달
+         ======================================================================== */}
+      {showMergeModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowMergeModal(false)}
+        >
+          <form
+            onSubmit={handleExecuteSmartMerge}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-md rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4"
+          >
+            <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+              🔗 선택한 노트 {selectedNoteIds.length}개 하나로 합치기
+            </h3>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              선택한 노트들의 본문, 체크리스트, 태그를 하나의 통합 노트로 깔끔하게 정리합니다.
+            </p>
+            <input
+              type="text"
+              value={mergeTitle}
+              onChange={(e) => setMergeTitle(e.target.value)}
+              placeholder="합쳐진 노트의 새 제목 (비워두면 자동 생성)"
+              className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-900 dark:text-white outline-none"
+            />
+            <label className="flex items-center gap-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={mergeRemoveOriginals}
+                onChange={(e) => setMergeRemoveOriginals(e.target.checked)}
+                className="w-4 h-4 accent-blue-600"
+              />
+              <span>병합 후 기존 개별 노트 삭제하기</span>
+            </label>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowMergeModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-500"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+              >
+                ✨ 하나로 병합하기
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ========================================================================
+          MODAL 4: 내 개인 노트에서 불러와 공유 방에 게시
+         ======================================================================== */}
+      {showPersonalPicker && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowPersonalPicker(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface-light dark:bg-surface-dark w-full max-w-lg rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-6 flex flex-col gap-4 max-h-[80vh]"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                📤 내 개인 노트를 공유 방에 게시하기
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowPersonalPicker(false)}
+                className="text-sm text-zinc-400"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto flex flex-col gap-2">
+              {personalNotes.length === 0 ? (
+                <div className="py-8 text-center text-xs text-zinc-400">
+                  저장된 개인 노트가 없습니다.
+                </div>
+              ) : (
+                personalNotes.map((pn) => (
+                  <div
+                    key={pn.id}
+                    className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                        {pn.title}
+                      </div>
+                      <div className="text-[11px] text-zinc-400 truncate">
+                        {getPlainText(pn.content || '').slice(0, 60)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSharePersonalNoteToRoom(pn)}
+                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0"
+                    >
+                      방에 공유
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SharedNoteCard({
+  note,
+  isSelected,
+  onToggleSelect,
+  onDragStart,
+  onView,
+  onEdit,
+  onDelete,
+  onToggleCheck,
+  onSavePersonal,
+  onShareInChat
+}) {
+  const plain = getPlainText(note.content || '');
+  const checklist = note.checklist || [];
+  const doneCount = checklist.filter((c) => c.done).length;
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      className={`group bg-canvas-light dark:bg-canvas-dark rounded-xl border p-3.5 flex flex-col gap-2.5 transition-all hover:border-blue-500/40 ${
+        isSelected
+          ? 'ring-2 ring-blue-600 border-blue-600'
+          : note.pinned
+          ? 'border-l-4 border-l-blue-600 border-line-light dark:border-line-dark'
+          : 'border-line-light dark:border-line-dark'
+      }`}
+    >
+      {/* 상단: 선택 체크박스 + 상태 배지 + 작성자 */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={onToggleSelect}
+            className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer"
+            title="병합/일괄 이동 선택"
+          />
+          {note.statusBadge && (
+            <span
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                STATUS_BADGE_STYLES[note.statusBadge] || ''
+              }`}
+            >
+              {note.statusBadge}
+            </span>
+          )}
+          {note.pinned && <span className="text-[11px]">📌</span>}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <UserAvatar user={note.author} size="sm" />
+          <span className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 truncate max-w-[75px]">
+            {note.author?.name}
+          </span>
+        </div>
+      </div>
+
+      {/* 제목 & 본문 요약 */}
+      <div onClick={onView} className="cursor-pointer flex flex-col gap-1">
+        <h4 className="text-xs sm:text-sm font-extrabold text-zinc-900 dark:text-zinc-100 line-clamp-2">
+          {note.title}
+        </h4>
+        {plain && (
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-3 leading-relaxed">
+            {plain}
+          </p>
+        )}
+      </div>
+
+      {/* 썸네일 이미지 */}
+      {note.imageDataUrl && (
+        <img
+          src={note.imageDataUrl}
+          alt="첨부"
+          onClick={onView}
+          className="rounded-lg max-h-32 w-full object-cover cursor-pointer border border-line-light dark:border-line-dark"
+        />
+      )}
+
+      {/* 미니 체크리스트 프리뷰 */}
+      {checklist.length > 0 && (
+        <div className="p-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark flex flex-col gap-1">
+          <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
+            <span>☑️ 체크리스트</span>
+            <span>
+              {doneCount}/{checklist.length}
+            </span>
+          </div>
+          {checklist.slice(0, 3).map((item) => (
+            <label
+              key={item.id}
+              className="flex items-center gap-1.5 text-[11px] cursor-pointer select-none"
+            >
+              <input
+                type="checkbox"
+                checked={Boolean(item.done)}
+                onChange={() => onToggleCheck(item.id)}
+                className="w-3 h-3 accent-blue-600"
+              />
+              <span
+                className={`truncate ${
+                  item.done ? 'line-through text-zinc-400' : 'text-zinc-700 dark:text-zinc-200'
+                }`}
+              >
+                {item.text}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* 태그 */}
+      {(note.tags || []).length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {note.tags.map((tag, i) => (
+            <span
+              key={i}
+              className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400"
+            >
+              #{tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* 하단 액션 바 */}
+      <div className="flex items-center justify-between pt-2 border-t border-line-light dark:border-line-dark text-[11px] font-bold">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onSavePersonal}
+            className="text-emerald-600 dark:text-emerald-400 hover:underline"
+            title="내 개인 노트로 저장"
+          >
+            📥 내 노트로
+          </button>
+          <button
+            type="button"
+            onClick={onShareInChat}
+            className="text-blue-600 dark:text-blue-400 hover:underline"
+            title="채팅창에 이 노트 공유"
+          >
+            💬 채팅공유
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+          >
+            수정
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="text-zinc-400 hover:text-red-500"
+          >
+            삭제
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

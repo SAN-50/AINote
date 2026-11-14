@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { fileURLToPath, pathToFileURL } = require('url');
+const { SharedRoomManager } = require('./sharedRoomManager');
 
 // 1. UserData 경로 고정 (%APPDATA%\ainote)
 const appDataRoot = app.getPath('appData');
@@ -1078,6 +1079,76 @@ ipcMain.handle('app:info', (event) => {
     userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged
   };
+});
+
+// 공유 스페이스 (Google 로그인 & 실시간 방 호스트/참가/채팅/정리) 매니저 초기화 및 IPC 핸들러
+const sharedRoomManager = new SharedRoomManager({
+  getAppDataDir: () => app.getPath('userData'),
+  sendToRenderer: (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, data);
+    }
+  },
+  openExternalUrl: (url) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:') {
+        shell.openExternal(url);
+      }
+    } catch (_e) {
+      // ignore
+    }
+  }
+});
+
+ipcMain.handle('shared:get-state', (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return { ok: true, ...sharedRoomManager.getPublicState() };
+});
+
+ipcMain.handle('shared:save-oauth-config', (event, config) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.saveOAuthConfig(config || {});
+});
+
+ipcMain.handle('shared:google-oauth-login', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  const res = await sharedRoomManager.startGoogleOAuthBrowserFlow();
+  if (res.ok && mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+  return res;
+});
+
+ipcMain.handle('shared:google-profile-login', (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.signInWithGoogleProfile(payload || {});
+});
+
+ipcMain.handle('shared:google-logout', (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.signOutGoogle();
+});
+
+ipcMain.handle('shared:host-room', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.hostRoom(payload || {});
+});
+
+ipcMain.handle('shared:join-room', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.joinRoom(payload || {});
+});
+
+ipcMain.handle('shared:leave-room', async (event) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.leaveCurrentRoom();
+});
+
+ipcMain.handle('shared:dispatch-action', async (event, action) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.dispatchRoomAction(action);
 });
 
 function formatUpdaterError(err) {
