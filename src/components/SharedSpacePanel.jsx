@@ -69,6 +69,7 @@ export function SharedSpacePanel({
   // Lobby inputs (Host / Join)
   const [recentRooms, setRecentRooms] = useState([]);
   const [savedRooms, setSavedRooms] = useState([]);
+  const [joinedRooms, setJoinedRooms] = useState([]);
   const [importBackupDraft, setImportBackupDraft] = useState(null);
   const [hostRoomName, setHostRoomName] = useState('');
   const [hostPassword, setHostPassword] = useState('');
@@ -81,6 +82,7 @@ export function SharedSpacePanel({
   // Active Room State
   const [activeRoom, setActiveRoom] = useState(null);
   const [showRoomManageModal, setShowRoomManageModal] = useState(false);
+  const [showJoinedRoomsPopover, setShowJoinedRoomsPopover] = useState(false);
   const [editingSectionId, setEditingSectionId] = useState(null);
   const [editingSectionTitle, setEditingSectionTitle] = useState('');
   const [viewMode, setViewMode] = useState('board'); // 'board' | 'grid' | 'checklist'
@@ -150,6 +152,7 @@ export function SharedSpacePanel({
         }
         setRecentRooms(res.recentRooms || []);
         setSavedRooms(res.savedRooms || []);
+        setJoinedRooms(res.joinedRooms || []);
         setActiveRoom(res.activeRoom || null);
       }
       if (mounted) setLoadingInit(false);
@@ -211,6 +214,8 @@ export function SharedSpacePanel({
       if (res?.ok && res.currentAccount) {
         setCurrentAccount(res.currentAccount);
         setRegisteredAccounts(res.registeredAccounts || []);
+        if (res.savedRooms) setSavedRooms(res.savedRooms);
+        if (res.joinedRooms) setJoinedRooms(res.joinedRooms);
         setLoginPasswordInput('');
         setAuthError('');
         showToast?.(`로그인 완료: ${res.currentAccount.name} (@${res.currentAccount.accountId}) ✓`, 'success');
@@ -357,6 +362,7 @@ export function SharedSpacePanel({
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
         if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
+        if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
         showToast?.(`'${res.room.roomName}' 방 호스트를 시작했습니다 ✓`, 'success');
       } else {
         showToast?.(res?.error || '방 생성에 실패했습니다.', 'error');
@@ -381,6 +387,7 @@ export function SharedSpacePanel({
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
         if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
+        if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
         showToast?.(`'${res.room.roomName}' 방에 입장했습니다 ✓`, 'success');
       } else {
         showToast?.(res?.error || '방 입장에 실패했습니다.', 'error');
@@ -390,15 +397,48 @@ export function SharedSpacePanel({
     }
   };
 
+  const handleQuickEnterRoom = async (roomId) => {
+    if (!api?.quickEnterSharedRoom || roomActionBusy) return;
+    setRoomActionBusy(true);
+    setShowJoinedRoomsPopover(false);
+    try {
+      const res = await api.quickEnterSharedRoom({ roomId });
+      if (res?.ok && res.room) {
+        setActiveRoom(res.room);
+        setSelectedNoteIds([]);
+        const stateRes = await api.getSharedState();
+        if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
+        if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
+        showToast?.(`'${res.room.roomName}' 방에 바로 입장했습니다 ✓`, 'success');
+      } else {
+        showToast?.(res?.error || '방 바로 입장에 실패했습니다.', 'error');
+      }
+    } finally {
+      setRoomActionBusy(false);
+    }
+  };
+
+  const handleRemoveJoinedRoom = async (roomId, roomName) => {
+    if (!api?.removeJoinedSharedRoom) return;
+    const res = await api.removeJoinedSharedRoom({ roomId });
+    if (res?.ok) {
+      if (res.state?.joinedRooms) setJoinedRooms(res.state.joinedRooms);
+      showToast?.(`'${roomName}' 방을 참여 목록에서 제거했습니다.`, 'info');
+    }
+  };
+
   const handleLeaveRoom = async () => {
     if (!api?.leaveSharedRoom) return;
     await api.leaveSharedRoom();
     setActiveRoom(null);
     setSelectedNoteIds([]);
     setShowRoomManageModal(false);
+    setShowJoinedRoomsPopover(false);
     const stateRes = await api.getSharedState();
     if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
     if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
+    if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
     showToast?.('방에서 나왔습니다.', 'info');
   };
 
@@ -451,10 +491,11 @@ export function SharedSpacePanel({
     if (res?.ok) {
       if (res.state?.savedRooms) setSavedRooms(res.state.savedRooms);
       if (res.state?.recentRooms) setRecentRooms(res.state.recentRooms);
+      if (res.state?.joinedRooms) setJoinedRooms(res.state.joinedRooms);
       setHostRoomName(res.roomName || '');
       setHostPassword(importBackupDraft.password);
       setImportBackupDraft(null);
-      showToast?.(`'${res.roomName}' 방을 복원했습니다. [방 호스트 시작하기]를 누르면 바로 열립니다 ✓`, 'success');
+      showToast?.(`'${res.roomName}' 방을 복원했습니다. 위 [참여 중인 그룹 노트]에서 바로 들어갈 수 있습니다 ✓`, 'success');
     } else {
       showToast?.(res?.error || '방 복원에 실패했습니다.', 'error');
     }
@@ -469,6 +510,7 @@ export function SharedSpacePanel({
     if (res?.ok) {
       if (res.state?.savedRooms) setSavedRooms(res.state.savedRooms);
       if (res.state?.recentRooms) setRecentRooms(res.state.recentRooms);
+      if (res.state?.joinedRooms) setJoinedRooms(res.state.joinedRooms);
       if (activeRoom?.roomId === roomId) {
         setActiveRoom(null);
         setShowRoomManageModal(false);
@@ -1137,6 +1179,74 @@ export function SharedSpacePanel({
           </div>
         </div>
 
+        {/* 참여 중인 그룹 노트 (비밀번호 재입력 없이 바로 들어가기) */}
+        <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-blue-500/25 dark:border-blue-500/20 shadow-sm flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-extrabold px-2.5 py-1 rounded-md bg-blue-600/10 text-blue-600 dark:text-blue-400">
+                🚪 참여 중인 그룹 노트 ({joinedRooms.length})
+              </span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                한 번 들어가거나 만든 방은 비밀번호를 다시 입력할 필요 없이 바로 들어가고 나올 수 있습니다.
+              </span>
+            </div>
+          </div>
+
+          {joinedRooms.length === 0 ? (
+            <div className="py-4 text-center text-xs text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
+              아직 참여 중인 그룹 노트가 없습니다. 아래에서 새 방을 만들거나 기존 방에 한 번 입장하면 이곳에 고정됩니다.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {joinedRooms.map((jr) => (
+                <div
+                  key={jr.roomId}
+                  className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark hover:border-blue-500/50 flex flex-col justify-between gap-2.5 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                        {jr.roomName}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${
+                          jr.role === 'host'
+                            ? 'bg-blue-600/15 text-blue-600 dark:text-blue-400'
+                            : 'bg-emerald-600/15 text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {jr.role === 'host' ? '👑 방장' : '🟢 참여 중'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 truncate">
+                      {jr.hostName ? `방장: ${jr.hostName}` : ''} · 노트 {jr.noteCount || 0}개 · 채팅{' '}
+                      {jr.messageCount || 0}개
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={roomActionBusy}
+                      onClick={() => handleQuickEnterRoom(jr.roomId)}
+                      className="flex-1 py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+                    >
+                      {roomActionBusy ? '연결 중...' : '🚀 바로 들어가기'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveJoinedRoom(jr.roomId, jr.roomName)}
+                      title="참여 목록에서 제거"
+                      className="px-2 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-red-500/10 text-zinc-400 hover:text-red-500 border border-line-light dark:border-line-dark text-[11px] font-bold transition-colors"
+                    >
+                      제거
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* 방 호스트하기 vs 방 참가하기 2단 카드 */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* 1) 방 호스트하기 (방 만들기) */}
@@ -1168,7 +1278,7 @@ export function SharedSpacePanel({
                   value={hostRoomName}
                   onChange={(e) => setHostRoomName(e.target.value)}
                   placeholder="예: 디자인팀 회의방, 스터디 노트"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
               </div>
 
@@ -1180,7 +1290,7 @@ export function SharedSpacePanel({
                   value={hostPassword}
                   onChange={(e) => setHostPassword(e.target.value)}
                   placeholder="입장 및 암호화에 사용할 비밀번호 (2자 이상)"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
               </div>
 
@@ -1189,7 +1299,7 @@ export function SharedSpacePanel({
                 <select
                   value={hostPermissionMode}
                   onChange={(e) => setHostPermissionMode(e.target.value)}
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-medium text-zinc-800 dark:text-zinc-200 outline-none"
                 >
                   <option value="all">모두 노트 작성 · 편집 · 삭제 가능 (공동 작업)</option>
                   <option value="host-delete">모두 작성 · 편집 가능 / 삭제는 호스트와 본인만</option>
@@ -1236,7 +1346,7 @@ export function SharedSpacePanel({
                   value={joinRoomName}
                   onChange={(e) => setJoinRoomName(e.target.value)}
                   placeholder="입장할 방 이름 입력"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
                 />
               </div>
 
@@ -1248,7 +1358,7 @@ export function SharedSpacePanel({
                   value={joinPassword}
                   onChange={(e) => setJoinPassword(e.target.value)}
                   placeholder="방 비밀번호 입력"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
                 />
               </div>
 
@@ -1396,7 +1506,7 @@ export function SharedSpacePanel({
                   onChange={(e) =>
                     setImportBackupDraft((prev) => ({ ...prev, roomName: e.target.value }))
                   }
-                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
               </div>
               <div className="flex flex-col gap-1">
@@ -1413,7 +1523,7 @@ export function SharedSpacePanel({
                   }
                   placeholder="멤버와 공유할 비밀번호 입력"
                   autoFocus
-                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
               </div>
               <div className="flex justify-end gap-2 pt-1">
@@ -1752,6 +1862,81 @@ export function SharedSpacePanel({
             ⚙️ 방 관리
           </button>
 
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowJoinedRoomsPopover((v) => !v)}
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+              title="참여 중인 다른 그룹 노트 바로 전환 또는 로비로 이동"
+            >
+              🚪 참여 방 ({joinedRooms.length})
+            </button>
+
+            {showJoinedRoomsPopover && (
+              <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-32px)] bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-2">
+                  <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                    참여 중인 그룹 노트 (비밀번호 없이 이동)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowJoinedRoomsPopover(false)}
+                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+                  {joinedRooms.length === 0 ? (
+                    <div className="text-[11px] text-zinc-400 py-3 text-center">
+                      저장된 참여 방이 없습니다.
+                    </div>
+                  ) : (
+                    joinedRooms.map((jr) => {
+                      const isCurr = jr.roomId === activeRoom.roomId;
+                      return (
+                        <button
+                          key={jr.roomId}
+                          type="button"
+                          disabled={roomActionBusy}
+                          onClick={() => {
+                            if (isCurr) {
+                              setShowJoinedRoomsPopover(false);
+                              return;
+                            }
+                            handleQuickEnterRoom(jr.roomId);
+                          }}
+                          className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
+                            isCurr
+                              ? 'bg-blue-600/10 border-blue-500/40 text-blue-600 dark:text-blue-400'
+                              : 'bg-canvas-light dark:bg-canvas-dark hover:border-blue-500/40 border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate">{jr.roomName}</div>
+                            <div className="text-[10px] text-zinc-400 truncate">
+                              {jr.role === 'host' ? '👑 방장' : '🟢 참여 중'} · 노트 {jr.noteCount || 0}개
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-bold shrink-0">
+                            {isCurr ? '현재 방' : '이동 ↗'}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLeaveRoom}
+                  className="w-full py-2 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-bold transition-colors"
+                >
+                  ← 로비(방 목록)로 나가기
+                </button>
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={handleLeaveRoom}
@@ -2033,7 +2218,7 @@ export function SharedSpacePanel({
                             value={editingSectionTitle}
                             onChange={(e) => setEditingSectionTitle(e.target.value)}
                             autoFocus
-                            className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-bold text-zinc-900 dark:text-white outline-none"
+                            className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-normal text-zinc-900 dark:text-white outline-none"
                           />
                           <button
                             type="submit"
@@ -2391,13 +2576,13 @@ export function SharedSpacePanel({
                                   showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
                                 }
                               }}
-                              className={`mt-2 w-full p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
+                              className={`mt-2 w-full min-w-0 max-w-full overflow-hidden p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
                                 isMine
                                   ? 'bg-blue-700/80 border-white/20 text-white'
                                   : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
                               }`}
                             >
-                              <div className="min-w-0">
+                              <div className="flex-1 min-w-0">
                                 <div className="text-[10px] opacity-75">📄 공유 노트 바로가기</div>
                                 <div className="text-xs font-bold truncate">
                                   {msg.sharedNoteRef.title}
@@ -2578,7 +2763,7 @@ export function SharedSpacePanel({
                 value={noteTitle}
                 onChange={(e) => setNoteTitle(e.target.value)}
                 placeholder="공유 노트 제목을 입력하세요"
-                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm font-bold text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
               />
 
               {/* 분류 선택: 섹션 / 폴더 / 상태 배지 / 상단 고정 */}
@@ -2929,7 +3114,7 @@ export function SharedSpacePanel({
               value={mergeTitle}
               onChange={(e) => setMergeTitle(e.target.value)}
               placeholder="합쳐진 노트의 새 제목 (비워두면 자동 생성)"
-              className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-900 dark:text-white outline-none"
+              className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-normal text-zinc-900 dark:text-white outline-none"
             />
             <label className="flex items-center gap-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 cursor-pointer">
               <input

@@ -1132,6 +1132,16 @@ ipcMain.handle('shared:join-room', async (event, payload) => {
   return await sharedRoomManager.joinRoom(payload || {});
 });
 
+ipcMain.handle('shared:quick-enter-room', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.quickEnterRoom(payload || {});
+});
+
+ipcMain.handle('shared:remove-joined-room', (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.removeJoinedRoom(payload?.roomId);
+});
+
 ipcMain.handle('shared:leave-room', async (event) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return await sharedRoomManager.leaveCurrentRoom();

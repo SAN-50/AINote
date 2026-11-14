@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   deleteSharedAccount: (payload) => ipcRenderer.invoke('shared:delete-account', payload),
   hostSharedRoom: (payload) => ipcRenderer.invoke('shared:host-room', payload),
   joinSharedRoom: (payload) => ipcRenderer.invoke('shared:join-room', payload),
+  quickEnterSharedRoom: (payload) => ipcRenderer.invoke('shared:quick-enter-room', payload),
+  removeJoinedSharedRoom: (payload) => ipcRenderer.invoke('shared:remove-joined-room', payload),
   leaveSharedRoom: () => ipcRenderer.invoke('shared:leave-room'),
   dispatchSharedAction: (action) => ipcRenderer.invoke('shared:dispatch-action', action),
   saveSharedRoomNow: () => ipcRenderer.invoke('shared:save-room-now'),

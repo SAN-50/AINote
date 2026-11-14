@@ -886,7 +886,11 @@ class SharedRoomManager {
                   ? acc.avatarColor
                   : pickAvatarColor(cleanId),
               createdAt: typeof acc.createdAt === 'number' ? acc.createdAt : Date.now(),
-              lastLoginAt: typeof acc.lastLoginAt === 'number' ? acc.lastLoginAt : 0
+              lastLoginAt: typeof acc.lastLoginAt === 'number' ? acc.lastLoginAt : 0,
+              rememberedRoomsVault:
+                acc.rememberedRoomsVault && typeof acc.rememberedRoomsVault === 'object'
+                  ? acc.rememberedRoomsVault
+                  : null
             };
           }
         }
@@ -927,6 +931,122 @@ class SharedRoomManager {
       .sort((a, b) => (b.lastLoginAt || 0) - (a.lastLoginAt || 0));
   }
 
+  getAccountVaultKey() {
+    if (!this.authenticatedSession?.privateKeyPem) return null;
+    return crypto
+      .createHash('sha256')
+      .update('treenote-room-vault-v1:')
+      .update(String(this.authenticatedSession.privateKeyPem))
+      .digest();
+  }
+
+  readAccountRememberedRooms() {
+    const accountId = this.authenticatedSession?.account?.accountId;
+    const vaultKey = this.getAccountVaultKey();
+    if (!accountId || !vaultKey) return {};
+    const storedAcc = this.storeData.accounts?.[accountId];
+    if (!storedAcc?.rememberedRoomsVault) return {};
+    try {
+      const decrypted = decryptPayload(storedAcc.rememberedRoomsVault, vaultKey);
+      return decrypted && typeof decrypted === 'object' && !Array.isArray(decrypted) ? decrypted : {};
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  writeAccountRememberedRooms(roomsMap) {
+    const accountId = this.authenticatedSession?.account?.accountId;
+    const vaultKey = this.getAccountVaultKey();
+    if (!accountId || !vaultKey) return;
+    const storedAcc = this.storeData.accounts?.[accountId];
+    if (!storedAcc) return;
+    storedAcc.rememberedRoomsVault = encryptPayload(roomsMap || {}, vaultKey);
+    this.saveStore();
+  }
+
+  rememberJoinedRoom({ room, password, role, hostCode = '' }) {
+    if (!room || !room.roomId || !password) return;
+    const map = this.readAccountRememberedRooms();
+    map[room.roomId] = {
+      roomId: room.roomId,
+      roomName: room.roomName,
+      password: String(password),
+      role: role === 'host' ? 'host' : 'guest',
+      permissionMode: room.permissionMode || 'all',
+      hostName: room.hostProfile?.name || '',
+      hostAccountId: room.hostProfile?.accountId || '',
+      hostCode: hostCode || map[room.roomId]?.hostCode || '',
+      noteCount: Array.isArray(room.notes) ? room.notes.length : 0,
+      messageCount: Array.isArray(room.messages) ? room.messages.length : 0,
+      lastEnteredAt: Date.now()
+    };
+    this.writeAccountRememberedRooms(map);
+  }
+
+  getJoinedRoomsList() {
+    const map = this.readAccountRememberedRooms();
+    return Object.values(map)
+      .map((entry) => {
+        const localRoom = this.storeData.hostedRooms?.[entry.roomId];
+        return {
+          roomId: entry.roomId,
+          roomName: localRoom?.roomName || entry.roomName,
+          role: entry.role || 'guest',
+          permissionMode: localRoom?.permissionMode || entry.permissionMode || 'all',
+          hostName: localRoom?.hostProfile?.name || entry.hostName || '',
+          hostAccountId: localRoom?.hostProfile?.accountId || entry.hostAccountId || '',
+          noteCount: localRoom ? (localRoom.notes || []).length : entry.noteCount || 0,
+          messageCount: localRoom ? (localRoom.messages || []).length : entry.messageCount || 0,
+          lastEnteredAt: entry.lastEnteredAt || 0
+        };
+      })
+      .sort((a, b) => (b.lastEnteredAt || 0) - (a.lastEnteredAt || 0));
+  }
+
+  removeJoinedRoom(roomId) {
+    const targetId = String(roomId || '').trim();
+    if (!targetId || !this.authenticatedSession) {
+      return { ok: false, error: '로그인이 필요합니다.' };
+    }
+    const map = this.readAccountRememberedRooms();
+    if (map[targetId]) {
+      delete map[targetId];
+      this.writeAccountRememberedRooms(map);
+    }
+    return { ok: true, state: this.getPublicState() };
+  }
+
+  async quickEnterRoom({ roomId }) {
+    if (!this.authenticatedSession) {
+      return { ok: false, error: '먼저 TreeNote 계정에 로그인해 주세요.' };
+    }
+    const targetId = String(roomId || '').trim();
+    if (!targetId) return { ok: false, error: '입장할 방을 선택해 주세요.' };
+    if (this.activeSession && this.activeSession.roomId === targetId) {
+      return { ok: true, room: this.getActiveRoomSnapshot() };
+    }
+    const map = this.readAccountRememberedRooms();
+    const entry = map[targetId];
+    if (!entry || !entry.roomName || !entry.password) {
+      return {
+        ok: false,
+        error: '저장된 비밀번호 정보가 없습니다. 방 이름과 비밀번호로 한 번 입장해 주세요.'
+      };
+    }
+    if (entry.role === 'host') {
+      return await this.hostRoom({
+        roomName: entry.roomName,
+        password: entry.password,
+        permissionMode: entry.permissionMode || 'all'
+      });
+    }
+    return await this.joinRoom({
+      roomName: entry.roomName,
+      password: entry.password,
+      hostCode: entry.hostCode || ''
+    });
+  }
+
   getSavedRoomsList() {
     return Object.values(this.storeData.hostedRooms || {})
       .map((room) => ({
@@ -949,6 +1069,7 @@ class SharedRoomManager {
       lastAccountId: this.storeData.lastAccountId || '',
       recentRooms: this.storeData.recentRooms || [],
       savedRooms: this.getSavedRoomsList(),
+      joinedRooms: this.getJoinedRoomsList(),
       activeRoom: this.getActiveRoomSnapshot()
     };
   }
@@ -1153,6 +1274,7 @@ class SharedRoomManager {
       isHost: true,
       hostCode: ''
     });
+    this.rememberJoinedRoom({ room: restoredRoom, password: cleanPwd, role: 'host' });
     this.saveStore();
     return { ok: true, roomId, roomName: cleanName, state: this.getPublicState() };
   }
@@ -1170,6 +1292,11 @@ class SharedRoomManager {
     this.storeData.recentRooms = (this.storeData.recentRooms || []).filter(
       (r) => r.roomId !== targetId
     );
+    const map = this.readAccountRememberedRooms();
+    if (map[targetId]) {
+      delete map[targetId];
+      this.writeAccountRememberedRooms(map);
+    }
     this.saveStore();
     return { ok: true, state: this.getPublicState() };
   }
@@ -1337,7 +1464,9 @@ class SharedRoomManager {
       ok: true,
       currentAccount: publicProfile,
       registeredAccounts: this.getRegisteredAccountList(),
-      lastAccountId: cleanId
+      lastAccountId: cleanId,
+      savedRooms: this.getSavedRoomsList(),
+      joinedRooms: this.getJoinedRoomsList()
     };
   }
 
@@ -1586,6 +1715,12 @@ class SharedRoomManager {
       roomId,
       roomName: cleanName,
       isHost: true,
+      hostCode: serverInfo.inviteCode
+    });
+    this.rememberJoinedRoom({
+      room,
+      password: cleanPwd,
+      role: 'host',
       hostCode: serverInfo.inviteCode
     });
     this.saveStore();
@@ -2348,6 +2483,12 @@ class SharedRoomManager {
           isHost: false,
           hostCode: inviteCode
         });
+        this.rememberJoinedRoom({
+          room: roomData,
+          password: cleanPwd,
+          role: 'guest',
+          hostCode: inviteCode
+        });
         this.saveStore();
 
         this.connectGuestEventStream(endpoint, authToken, cipherKey, memberSessionToken);
@@ -2356,11 +2497,8 @@ class SharedRoomManager {
           ok: true,
           room: this.getActiveRoomSnapshot()
         };
-      } catch (err) {
-        return {
-          ok: false,
-          error: `방 연결 중 오류가 발생했습니다: ${err.message}`
-        };
+      } catch (_err) {
+        // LAN HTTP handshake failed unexpectedly; fall through cleanly to E2EE Relay
       }
     }
 
@@ -2368,6 +2506,8 @@ class SharedRoomManager {
     const relayResult = await this.joinRoomViaRelay({
       roomId,
       roomName: cleanName,
+      password: cleanPwd,
+      hostCode,
       authToken,
       cipherKey,
       authSess
@@ -2425,7 +2565,7 @@ class SharedRoomManager {
     });
   }
 
-  async joinRoomViaRelay({ roomId, roomName, authToken, cipherKey, authSess }) {
+  async joinRoomViaRelay({ roomId, roomName, password, hostCode, authToken, cipherKey, authSess }) {
     const account = authSess.account;
     const topic = deriveRelayTopic(roomId, authToken);
 
@@ -2493,12 +2633,22 @@ class SharedRoomManager {
     }
 
     try {
-      const challengeRes = await this.sendRelayRequest(
-        relayClient,
-        { op: 'CHALLENGE', roomId },
-        'CHALLENGE_RES',
-        3500
-      );
+      let challengeRes = null;
+      try {
+        challengeRes = await this.sendRelayRequest(
+          relayClient,
+          { op: 'CHALLENGE', roomId },
+          'CHALLENGE_RES',
+          2000
+        );
+      } catch (_firstTryErr) {
+        challengeRes = await this.sendRelayRequest(
+          relayClient,
+          { op: 'CHALLENGE', roomId },
+          'CHALLENGE_RES',
+          2200
+        );
+      }
       if (!challengeRes?.ok || !challengeRes.nonce) {
         relayClient.close();
         return { ok: false, definiteAuthError: false, error: '인증 챌린지를 받아오지 못했습니다.' };
@@ -2561,7 +2711,13 @@ class SharedRoomManager {
         roomId,
         roomName: roomData.roomName || roomName,
         isHost: false,
-        hostCode: ''
+        hostCode: hostCode || ''
+      });
+      this.rememberJoinedRoom({
+        room: roomData,
+        password,
+        role: 'guest',
+        hostCode: hostCode || ''
       });
       this.saveStore();
 
@@ -2576,18 +2732,24 @@ class SharedRoomManager {
   }
 
   async locateActiveRoomHost(roomId, hostCode) {
-    // 1. If user supplied an explicit invite code, IP:Port, or pasted invite block
+    // 1. If user supplied an explicit invite code, IP:Port, or pasted invite block (parallel probe)
     const decodedList = decodeInviteCode(hostCode);
-    for (const candidate of decodedList) {
-      const ok = await this.pingHostCandidate(candidate.host, candidate.port, roomId);
-      if (ok) return candidate;
+    if (decodedList.length > 0) {
+      const checks = await Promise.all(
+        decodedList.map(async (c) => ((await this.pingHostCandidate(c.host, c.port, roomId)) ? c : null))
+      );
+      const hit = checks.find(Boolean);
+      if (hit) return hit;
     }
 
-    // 2. Probe localhost ports (for testing/using across instances on same PC)
-    for (const port of LOCAL_PORT_CANDIDATES) {
-      const ok = await this.pingHostCandidate('127.0.0.1', port, roomId);
-      if (ok) return { host: '127.0.0.1', port };
-    }
+    // 2. Probe localhost ports in parallel (for same-PC multi-instance testing)
+    const localChecks = await Promise.all(
+      LOCAL_PORT_CANDIDATES.map(async (port) =>
+        (await this.pingHostCandidate('127.0.0.1', port, roomId)) ? { host: '127.0.0.1', port } : null
+      )
+    );
+    const localHit = localChecks.find(Boolean);
+    if (localHit) return localHit;
 
     // 3. Broadcast UDP discovery packet on LAN + directed subnet broadcasts
     const lanIfaces = getAllLanInterfaces();
@@ -2650,7 +2812,7 @@ class SharedRoomManager {
           }
           resolve(null);
         }
-      }, 850);
+      }, 550);
     });
 
     return discovered;
