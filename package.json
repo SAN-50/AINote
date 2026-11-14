@@ -44,7 +44,6 @@
       "main.js",
       "preload.js",
       "sharedRoomManager.js",
-      "oauth-defaults*.json",
       "renderer-dist/**/*",
       "build/icon.ico",
       "package.json"

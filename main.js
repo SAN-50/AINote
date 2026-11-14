@@ -1082,22 +1082,12 @@ ipcMain.handle('app:info', (event) => {
   };
 });
 
-// 공유 스페이스 (Google 로그인 & 실시간 방 호스트/참가/채팅/정리) 매니저 초기화 및 IPC 핸들러
+// 공유 스페이스 (자체 계정 로그인 & 실시간 방 호스트/참가/채팅/정리) 매니저 초기화 및 IPC 핸들러
 const sharedRoomManager = new SharedRoomManager({
   getAppDataDir: () => app.getPath('userData'),
   sendToRenderer: (channel, data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, data);
-    }
-  },
-  openExternalUrl: (url) => {
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol === 'https:') {
-        shell.openExternal(url);
-      }
-    } catch (_e) {
-      // ignore
     }
   }
 });
@@ -1107,32 +1097,29 @@ ipcMain.handle('shared:get-state', (event) => {
   return { ok: true, ...sharedRoomManager.getPublicState() };
 });
 
-ipcMain.handle('shared:save-oauth-config', (event, config) => {
+ipcMain.handle('shared:register-account', (event, payload) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
-  return sharedRoomManager.saveOAuthConfig(config || {});
+  return sharedRoomManager.registerAccount(payload || {});
 });
 
-ipcMain.handle('shared:google-oauth-login', async (event) => {
+ipcMain.handle('shared:login-account', (event, payload) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
-  const res = await sharedRoomManager.startGoogleOAuthBrowserFlow();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.moveTop();
-  }
-  return res;
+  return sharedRoomManager.loginAccount(payload || {});
 });
 
-ipcMain.handle('shared:open-oauth-console', (event) => {
+ipcMain.handle('shared:logout-account', async (event) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
-  shell.openExternal('https://console.cloud.google.com/apis/credentials');
-  return { ok: true };
+  return sharedRoomManager.logoutAccount();
 });
 
-ipcMain.handle('shared:google-logout', (event) => {
+ipcMain.handle('shared:update-account', (event, payload) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
-  return sharedRoomManager.signOutGoogle();
+  return sharedRoomManager.updateAccount(payload || {});
+});
+
+ipcMain.handle('shared:delete-account', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return sharedRoomManager.deleteAccount(payload || {});
 });
 
 ipcMain.handle('shared:host-room', async (event, payload) => {

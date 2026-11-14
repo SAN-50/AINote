@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const https = require('https');
 const dgram = require('dgram');
 const os = require('os');
 const crypto = require('crypto');
@@ -10,13 +9,69 @@ const { URL } = require('url');
 const DISCOVERY_PORT = 49872;
 const LOCAL_PORT_CANDIDATES = [49873, 49874, 49875, 49876, 49877];
 const MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024; // 8MB max per packet
-const MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024; // 1MB max for OAuth token response
 const MAX_SSE_CLIENTS = 30;
 const MAX_CHAT_MESSAGES = 300;
 const MAX_SHARED_NOTES = 500;
 const MAX_JOIN_ATTEMPTS = 5;
 const JOIN_LOCKOUT_MS = 30 * 1000;
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 30 * 1000;
+const PASSWORD_MIN_LEN = 6;
+const PASSWORD_MAX_LEN = 128;
+const ACCOUNT_ID_RE = /^[a-z0-9_-]{3,24}$/;
+const RESERVED_ACCOUNT_IDS = new Set([
+  'anonymous',
+  'system',
+  'admin',
+  'host',
+  'root',
+  'null',
+  'undefined'
+]);
 const BLOCKED_INVITE_PORTS = new Set([3306, 5432, 6379, 27017, 9200, 11211]);
+
+function normalizeAccountId(rawId) {
+  return String(rawId || '')
+    .trim()
+    .toLowerCase();
+}
+
+function computePublicKeyFingerprint(publicKeyPem) {
+  return crypto
+    .createHash('sha256')
+    .update(String(publicKeyPem || '').trim())
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function encryptSecretWithPassword(plainText, password) {
+  const salt = crypto.randomBytes(16);
+  const key = crypto.scryptSync(String(password), salt, 32);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(Buffer.from(plainText, 'utf8')), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    salt: salt.toString('hex'),
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: encrypted.toString('base64')
+  };
+}
+
+function decryptSecretWithPassword(envelope, password) {
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('Invalid key envelope');
+  }
+  const salt = Buffer.from(String(envelope.salt || ''), 'hex');
+  const key = crypto.scryptSync(String(password), salt, 32);
+  const iv = Buffer.from(String(envelope.iv || ''), 'base64');
+  const tag = Buffer.from(String(envelope.tag || ''), 'base64');
+  const data = Buffer.from(String(envelope.data || ''), 'base64');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+}
 
 function escapeHtml(str) {
   return String(str || '')
@@ -188,34 +243,29 @@ function sanitizeAuthor(author) {
   if (!author || typeof author !== 'object') {
     return {
       uid: 'anonymous',
+      accountId: '',
       name: '익명 멤버',
-      email: '',
-      picture: '',
       avatarColor: '#2563EB'
     };
   }
-  const email = typeof author.email === 'string' ? author.email.trim().slice(0, 120) : '';
+  const accountId =
+    typeof author.accountId === 'string' && ACCOUNT_ID_RE.test(author.accountId.trim().toLowerCase())
+      ? author.accountId.trim().toLowerCase()
+      : '';
   const name =
     typeof author.name === 'string' && author.name.trim()
       ? author.name.trim().slice(0, 40)
-      : email
-      ? email.split('@')[0]
-      : '멤버';
+      : accountId || '멤버';
   const uid =
     typeof author.uid === 'string' && author.uid.trim()
       ? author.uid.trim().slice(0, 80)
-      : `google:${crypto.createHash('sha256').update(email || name).digest('hex').slice(0, 20)}`;
-  const picture =
-    typeof author.picture === 'string' &&
-    /^https:\/\/[a-z0-9.-]*googleusercontent\.com\//i.test(author.picture)
-      ? author.picture.slice(0, 400)
-      : '';
+      : `acct:${accountId || crypto.createHash('sha256').update(name).digest('hex').slice(0, 20)}`;
   const avatarColor =
     typeof author.avatarColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(author.avatarColor)
       ? author.avatarColor
       : pickAvatarColor(uid);
 
-  return { uid, name, email, picture, avatarColor };
+  return { uid, accountId, name, avatarColor };
 }
 
 function sanitizeChecklist(list) {
@@ -298,19 +348,21 @@ function sanitizeChatMessage(raw, fallbackAuthor) {
 }
 
 class SharedRoomManager {
-  constructor({ getAppDataDir, sendToRenderer, openExternalUrl }) {
+  constructor({ getAppDataDir, sendToRenderer }) {
     this.getAppDataDir = getAppDataDir;
     this.sendToRenderer = sendToRenderer;
-    this.openExternalUrl = openExternalUrl;
 
     this.storeData = this.loadStore();
+    this.authenticatedSession = null; // { account: publicProfile, publicKeyPem, privateKeyPem }
+    this.failedLoginState = { count: 0, lockoutUntil: 0 };
     this.activeSession = null; // { mode: 'host' | 'guest', roomId, roomName, cipherKey, authToken, ... }
     this.httpServer = null;
     this.udpSocket = null;
     this.sseClients = new Map(); // memberUid -> { res, profile, lastSeen }
+    this.verifiedSessions = new Map(); // sessionToken -> { profile, issuedAt }
+    this.joinNonces = new Map(); // nonce -> { expiresAt }
     this.failedJoinMap = new Map(); // ip -> { count, lockoutUntil }
     this.guestEventReq = null;
-    this.oauthServer = null;
   }
 
   getStoreFilePath() {
@@ -320,30 +372,51 @@ class SharedRoomManager {
   loadStore() {
     const filePath = this.getStoreFilePath();
     const defaultStore = {
-      googleAccount: null,
-      oauthConfig: { clientId: '', clientSecret: '' },
+      accounts: {}, // accountId -> { accountId, displayName, uid, passwordSalt, passwordHash, publicKeyPem, privateKeyEncrypted, avatarColor, createdAt, lastLoginAt }
+      lastAccountId: '',
       hostedRooms: {}, // roomId -> persisted room object
-      recentRooms: [] // [{ roomId, roomName, isHost, lastJoinedAt, hostCode, memberCount }]
+      recentRooms: [] // [{ roomId, roomName, isHost, lastJoinedAt, hostCode }]
     };
     if (!fs.existsSync(filePath)) return defaultStore;
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      const savedGoogleAccount =
-        parsed.googleAccount && parsed.googleAccount.oauthVerified === true
-          ? { ...sanitizeAuthor(parsed.googleAccount), oauthVerified: true }
-          : null;
+      const cleanAccounts = {};
+      if (parsed.accounts && typeof parsed.accounts === 'object' && !Array.isArray(parsed.accounts)) {
+        for (const [key, acc] of Object.entries(parsed.accounts)) {
+          const cleanId = normalizeAccountId(acc?.accountId || key);
+          if (
+            ACCOUNT_ID_RE.test(cleanId) &&
+            acc &&
+            typeof acc.passwordSalt === 'string' &&
+            typeof acc.passwordHash === 'string' &&
+            typeof acc.publicKeyPem === 'string' &&
+            acc.privateKeyEncrypted
+          ) {
+            cleanAccounts[cleanId] = {
+              accountId: cleanId,
+              displayName:
+                typeof acc.displayName === 'string' && acc.displayName.trim()
+                  ? acc.displayName.trim().slice(0, 20)
+                  : cleanId,
+              uid: typeof acc.uid === 'string' ? acc.uid : `acct:${cleanId}:${computePublicKeyFingerprint(acc.publicKeyPem)}`,
+              passwordSalt: acc.passwordSalt,
+              passwordHash: acc.passwordHash,
+              publicKeyPem: acc.publicKeyPem,
+              privateKeyEncrypted: acc.privateKeyEncrypted,
+              avatarColor:
+                typeof acc.avatarColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(acc.avatarColor)
+                  ? acc.avatarColor
+                  : pickAvatarColor(cleanId),
+              createdAt: typeof acc.createdAt === 'number' ? acc.createdAt : Date.now(),
+              lastLoginAt: typeof acc.lastLoginAt === 'number' ? acc.lastLoginAt : 0
+            };
+          }
+        }
+      }
+      const lastId = normalizeAccountId(parsed.lastAccountId || '');
       return {
-        googleAccount: savedGoogleAccount,
-        oauthConfig: {
-          clientId:
-            typeof parsed.oauthConfig?.clientId === 'string'
-              ? parsed.oauthConfig.clientId.trim()
-              : '',
-          clientSecret:
-            typeof parsed.oauthConfig?.clientSecret === 'string'
-              ? parsed.oauthConfig.clientSecret.trim()
-              : ''
-        },
+        accounts: cleanAccounts,
+        lastAccountId: cleanAccounts[lastId] ? lastId : '',
         hostedRooms:
           parsed.hostedRooms && typeof parsed.hostedRooms === 'object' ? parsed.hostedRooms : {},
         recentRooms: Array.isArray(parsed.recentRooms) ? parsed.recentRooms.slice(0, 20) : []
@@ -365,38 +438,22 @@ class SharedRoomManager {
     }
   }
 
-  resolveOAuthCredentials() {
-    let bundledClientId = '';
-    let bundledClientSecret = '';
-    try {
-      const defaultsPath = path.join(__dirname, 'oauth-defaults.json');
-      if (fs.existsSync(defaultsPath)) {
-        const parsed = JSON.parse(fs.readFileSync(defaultsPath, 'utf8'));
-        bundledClientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : '';
-        bundledClientSecret =
-          typeof parsed?.clientSecret === 'string' ? parsed.clientSecret.trim() : '';
-      }
-    } catch (_e) {
-      // ignore invalid bundled defaults
-    }
-
-    const savedId = this.storeData.oauthConfig?.clientId || '';
-    const savedSecret = this.storeData.oauthConfig?.clientSecret || '';
-    const clientId = savedId || bundledClientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
-    const clientSecret = savedId
-      ? savedSecret || bundledClientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || ''
-      : bundledClientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
-
-    return { clientId, clientSecret };
+  getRegisteredAccountList() {
+    return Object.values(this.storeData.accounts || {})
+      .map((acc) => ({
+        accountId: acc.accountId,
+        displayName: acc.displayName || acc.accountId,
+        avatarColor: acc.avatarColor || pickAvatarColor(acc.uid),
+        lastLoginAt: acc.lastLoginAt || 0
+      }))
+      .sort((a, b) => (b.lastLoginAt || 0) - (a.lastLoginAt || 0));
   }
 
   getPublicState() {
-    const { clientId, clientSecret } = this.resolveOAuthCredentials();
     return {
-      googleAccount: this.storeData.googleAccount,
-      hasOAuthClientId: Boolean(clientId),
-      hasOAuthClientSecret: Boolean(clientSecret),
-      oauthClientId: clientId,
+      currentAccount: this.authenticatedSession ? this.authenticatedSession.account : null,
+      registeredAccounts: this.getRegisteredAccountList(),
+      lastAccountId: this.storeData.lastAccountId || '',
       recentRooms: this.storeData.recentRooms || [],
       activeRoom: this.getActiveRoomSnapshot()
     };
@@ -438,305 +495,295 @@ class SharedRoomManager {
   }
 
   // ============================================================================
-  // 1. Google Account Login (Official OAuth 2.0 PKCE Loopback Only)
+  // 1. TreeNote Account Authentication (회원가입 · 로그인 · 계정 관리)
   // ============================================================================
-  saveOAuthConfig({ clientId, clientSecret }) {
-    const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
-    const rawSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
-    if (!cleanClientId) {
-      return { ok: false, error: 'Google Cloud OAuth Client ID를 입력해 주세요.' };
+  checkLoginRateLimit() {
+    const now = Date.now();
+    if (this.failedLoginState.lockoutUntil > now) {
+      const secs = Math.ceil((this.failedLoginState.lockoutUntil - now) / 1000);
+      return {
+        allowed: false,
+        error: `비밀번호 입력 시도가 너무 많습니다. ${secs}초 후에 다시 시도해 주세요.`
+      };
     }
-    const prevConfig = this.storeData.oauthConfig || {};
-    const nextSecret =
-      rawSecret || (prevConfig.clientId === cleanClientId ? prevConfig.clientSecret || '' : '');
-
-    this.storeData.oauthConfig = {
-      clientId: cleanClientId,
-      clientSecret: nextSecret
-    };
-    this.saveStore();
-    return {
-      ok: true,
-      hasOAuthClientId: Boolean(this.storeData.oauthConfig.clientId),
-      hasOAuthClientSecret: Boolean(this.storeData.oauthConfig.clientSecret),
-      oauthClientId: this.storeData.oauthConfig.clientId
-    };
+    return { allowed: true };
   }
 
-  async startGoogleOAuthBrowserFlow() {
-    const { clientId, clientSecret } = this.resolveOAuthCredentials();
-    if (!clientId) {
+  recordLoginAttempt(success) {
+    if (success) {
+      this.failedLoginState = { count: 0, lockoutUntil: 0 };
+      return;
+    }
+    this.failedLoginState.count += 1;
+    if (this.failedLoginState.count >= MAX_LOGIN_ATTEMPTS) {
+      this.failedLoginState.lockoutUntil = Date.now() + LOGIN_LOCKOUT_MS;
+      this.failedLoginState.count = 0;
+    }
+  }
+
+  verifyAccountPasswordHash(password, saltHex, expectedHashHex) {
+    if (!password || !saltHex || !expectedHashHex) return false;
+    try {
+      const computed = crypto.scryptSync(String(password), saltHex, 64);
+      const expected = Buffer.from(expectedHashHex, 'hex');
+      if (computed.length === 0 || computed.length !== expected.length) return false;
+      return crypto.timingSafeEqual(computed, expected);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  registerAccount({ accountId, displayName, password, confirmPassword }) {
+    const cleanId = normalizeAccountId(accountId);
+    if (!ACCOUNT_ID_RE.test(cleanId)) {
       return {
         ok: false,
-        needsConfig: true,
-        error: 'Google Cloud OAuth Client ID가 설정되지 않았습니다. OAuth 설정에서 Client ID를 먼저 입력해 주세요.'
+        error: '아이디는 영문 소문자, 숫자, 밑줄(_), 하이픈(-) 조합 3~24자로 입력해 주세요.'
       };
     }
-
-    if (this.oauthServer) {
-      try {
-        this.oauthServer.close();
-      } catch (_e) {
-        // ignore
-      }
-      this.oauthServer = null;
+    if (RESERVED_ACCOUNT_IDS.has(cleanId)) {
+      return { ok: false, error: '사용할 수 없는 예약어 아이디입니다.' };
+    }
+    if (this.storeData.accounts[cleanId]) {
+      return { ok: false, error: `'${cleanId}' 아이디는 이미 가입되어 있습니다. 로그인을 진행해 주세요.` };
     }
 
-    const codeVerifier = crypto.randomBytes(32).toString('base64url');
-    const codeChallenge = crypto
-      .createHash('sha256')
-      .update(codeVerifier)
-      .digest('base64url');
-    const stateToken = crypto.randomBytes(16).toString('hex');
-
-    return new Promise((resolve) => {
-      let settled = false;
-      let callbackReceived = false;
-      let timeoutId = null;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-        resolve(result);
+    const rawPwd = typeof password === 'string' ? password : '';
+    const trimmedPwd = rawPwd.trim();
+    if (trimmedPwd.length < PASSWORD_MIN_LEN || rawPwd.length > PASSWORD_MAX_LEN) {
+      return {
+        ok: false,
+        error: `비밀번호는 공백 제외 ${PASSWORD_MIN_LEN}자 이상 ${PASSWORD_MAX_LEN}자 이하로 입력해 주세요.`
       };
+    }
+    if (typeof confirmPassword === 'string' && rawPwd !== confirmPassword) {
+      return { ok: false, error: '비밀번호와 비밀번호 확인이 일치하지 않습니다.' };
+    }
 
-      const server = http.createServer(async (req, res) => {
-        try {
-          const reqUrl = new URL(req.url, 'http://127.0.0.1');
-          if (reqUrl.pathname !== '/oauth2callback') {
-            res.writeHead(404);
-            res.end();
-            return;
-          }
+    const cleanName =
+      typeof displayName === 'string' && displayName.trim()
+        ? displayName.trim().slice(0, 20)
+        : cleanId;
 
-          callbackReceived = true;
-          const returnedState = reqUrl.searchParams.get('state');
-          const code = reqUrl.searchParams.get('code');
-          const errParam = reqUrl.searchParams.get('error');
+    const passwordSalt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = crypto.scryptSync(rawPwd, passwordSalt, 64).toString('hex');
 
-          res.writeHead(200, {
-            'Content-Type': 'text/html; charset=utf-8',
-            Connection: 'close'
-          });
-          res.end(`<!DOCTYPE html>
-            <html lang="ko">
-              <head><meta charset="utf-8"><title>나무 노트 - Google 로그인</title></head>
-              <body style="font-family:sans-serif;background:#0F1014;color:#F3F4F6;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-                <div style="background:#1C1E26;padding:32px 40px;border-radius:16px;border:1px solid #2A2D3A;text-align:center;">
-                  <h2 style="margin:0 0 8px 0;">🌲 나무 노트 Google 로그인 완료</h2>
-                  <p style="margin:0;color:#9CA3AF;font-size:14px;">자동으로 나무 노트 앱으로 돌아갑니다. 탭이 닫히지 않으면 이 창을 닫아 주세요.</p>
-                </div>
-                <script>
-                  setTimeout(function () {
-                    try { window.open('', '_self'); window.close(); } catch (_e) {}
-                  }, 500);
-                </script>
-              </body>
-            </html>`);
-
-          server.close();
-          if (this.oauthServer === server) {
-            this.oauthServer = null;
-          }
-
-          if (errParam || !code || returnedState !== stateToken) {
-            finish({ ok: false, error: 'Google 로그인이 취소되었거나 상태 검증에 실패했습니다.' });
-            return;
-          }
-
-          const tokenData = await this.exchangeGoogleCodeForProfile({
-            code,
-            clientId,
-            clientSecret,
-            codeVerifier,
-            redirectUri
-          });
-
-          if (tokenData.ok) {
-            this.storeData.googleAccount = tokenData.profile;
-            this.saveStore();
-            this.sendToRenderer('shared:auth-updated', {
-              googleAccount: tokenData.profile
-            });
-            finish({ ok: true, googleAccount: tokenData.profile });
-          } else {
-            finish({ ok: false, error: tokenData.error });
-          }
-        } catch (err) {
-          finish({ ok: false, error: err.message });
-        }
-      });
-
-      server.on('close', () => {
-        if (this.oauthServer === server) {
-          this.oauthServer = null;
-        }
-        if (!callbackReceived) {
-          finish({ ok: false, error: 'Google 로그인이 중단되었습니다.' });
-        }
-      });
-
-      this.oauthServer = server;
-      let redirectUri = '';
-
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address();
-        redirectUri = `http://127.0.0.1:${addr.port}/oauth2callback`;
-        const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-        authUrl.searchParams.set('client_id', clientId);
-        authUrl.searchParams.set('redirect_uri', redirectUri);
-        authUrl.searchParams.set('response_type', 'code');
-        authUrl.searchParams.set('scope', 'openid email profile');
-        authUrl.searchParams.set('state', stateToken);
-        authUrl.searchParams.set('code_challenge', codeChallenge);
-        authUrl.searchParams.set('code_challenge_method', 'S256');
-        authUrl.searchParams.set('prompt', 'select_account');
-
-        this.openExternalUrl(authUrl.toString());
-      });
-
-      timeoutId = setTimeout(() => {
-        if (!callbackReceived && this.oauthServer === server) {
-          try {
-            server.close();
-          } catch (_e) {
-            // ignore
-          }
-          this.oauthServer = null;
-          finish({ ok: false, error: 'Google 로그인 응답 시간이 초과되었습니다.' });
-        }
-      }, 180 * 1000);
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
     });
-  }
 
-  exchangeGoogleCodeForProfile({ code, clientId, clientSecret, codeVerifier, redirectUri }) {
-    return new Promise((resolve) => {
-      const postParams = new URLSearchParams({
-        code,
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-        code_verifier: codeVerifier
-      });
-      if (clientSecret) {
-        postParams.set('client_secret', clientSecret);
-      }
-      const postData = postParams.toString();
+    const fingerprint = computePublicKeyFingerprint(publicKey);
+    const uid = `acct:${cleanId}:${fingerprint}`;
+    const avatarColor = pickAvatarColor(uid);
+    const privateKeyEncrypted = encryptSecretWithPassword(privateKey, rawPwd);
 
-      const req = https.request(
-        'https://oauth2.googleapis.com/token',
-        {
-          method: 'POST',
-          timeout: 10000,
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Content-Length': Buffer.byteLength(postData)
-          }
-        },
-        (res) => {
-          const chunks = [];
-          let totalBytes = 0;
-          let oversized = false;
-          res.on('data', (chunk) => {
-            totalBytes += chunk.length;
-            if (totalBytes > MAX_OAUTH_RESPONSE_BYTES) {
-              oversized = true;
-              req.destroy();
-              resolve({ ok: false, error: 'Google 인증 응답 크기가 허용 한도를 초과했습니다.' });
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on('end', () => {
-            if (oversized) return;
-            try {
-              const body = Buffer.concat(chunks).toString('utf8');
-              const parsed = JSON.parse(body);
-              if (!parsed.id_token && !parsed.access_token) {
-                const rawDesc = String(parsed.error_description || parsed.error || '');
-                const friendlyError = rawDesc.includes('client_secret')
-                  ? 'Google OAuth Client Secret이 누락되었거나 일치하지 않습니다. OAuth 설정에서 Client Secret을 함께 입력해 주세요.'
-                  : rawDesc || 'Google 토큰 발급에 실패했습니다.';
-                resolve({
-                  ok: false,
-                  error: friendlyError
-                });
-                return;
-              }
-              // Parse & validate ID token JWT claims
-              if (parsed.id_token) {
-                const parts = parsed.id_token.split('.');
-                if (parts.length === 3) {
-                  const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-                  const validIssuer =
-                    claims.iss === 'https://accounts.google.com' ||
-                    claims.iss === 'accounts.google.com';
-                  const validAudience = claims.aud === clientId;
-                  const validExp =
-                    typeof claims.exp === 'number' && claims.exp * 1000 > Date.now();
-
-                  if (!validIssuer || !validAudience || !validExp) {
-                    resolve({
-                      ok: false,
-                      error: 'Google ID 토큰 클레임 검증에 실패했습니다. (발급자/대상/만료 확인)'
-                    });
-                    return;
-                  }
-
-                  const email = String(claims.email || '').toLowerCase();
-                  if (!email || claims.email_verified === false) {
-                    resolve({ ok: false, error: '인증된 Google 계정 이메일 정보를 확인할 수 없습니다.' });
-                    return;
-                  }
-                  const uid = `google:${claims.sub || email}`;
-                  const profile = {
-                    ...sanitizeAuthor({
-                      uid,
-                      email,
-                      name: claims.name || email.split('@')[0],
-                      picture: claims.picture || '',
-                      avatarColor: pickAvatarColor(uid)
-                    }),
-                    oauthVerified: true
-                  };
-                  resolve({ ok: true, profile });
-                  return;
-                }
-              }
-              resolve({ ok: false, error: '프로필 정보를 읽을 수 없습니다.' });
-            } catch (e) {
-              resolve({ ok: false, error: e.message });
-            }
-          });
-        }
-      );
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ ok: false, error: 'Google 인증 서버 응답 시간이 초과되었습니다.' });
-      });
-      req.on('error', (err) => resolve({ ok: false, error: err.message }));
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  signOutGoogle() {
-    this.leaveCurrentRoom();
-    this.storeData.googleAccount = null;
+    this.storeData.accounts[cleanId] = {
+      accountId: cleanId,
+      displayName: cleanName,
+      uid,
+      passwordSalt,
+      passwordHash,
+      publicKeyPem: publicKey,
+      privateKeyEncrypted,
+      avatarColor,
+      createdAt: Date.now(),
+      lastLoginAt: 0
+    };
+    this.storeData.lastAccountId = cleanId;
     this.saveStore();
-    return { ok: true };
+
+    return {
+      ok: true,
+      accountId: cleanId,
+      registeredAccounts: this.getRegisteredAccountList()
+    };
+  }
+
+  loginAccount({ accountId, password }) {
+    const rate = this.checkLoginRateLimit();
+    if (!rate.allowed) {
+      return { ok: false, error: rate.error };
+    }
+
+    const cleanId = normalizeAccountId(accountId);
+    const rawPwd = typeof password === 'string' ? password : '';
+    if (!cleanId || !rawPwd) {
+      return { ok: false, error: '아이디와 비밀번호를 모두 입력해 주세요.' };
+    }
+
+    const storedAcc = this.storeData.accounts[cleanId];
+    if (!storedAcc) {
+      this.recordLoginAttempt(false);
+      return { ok: false, error: '존재하지 않는 아이디이거나 비밀번호가 일치하지 않습니다.' };
+    }
+
+    const matched = this.verifyAccountPasswordHash(
+      rawPwd,
+      storedAcc.passwordSalt,
+      storedAcc.passwordHash
+    );
+    if (!matched) {
+      this.recordLoginAttempt(false);
+      return { ok: false, error: '존재하지 않는 아이디이거나 비밀번호가 일치하지 않습니다.' };
+    }
+
+    let privateKeyPem = '';
+    try {
+      privateKeyPem = decryptSecretWithPassword(storedAcc.privateKeyEncrypted, rawPwd);
+    } catch (_e) {
+      return { ok: false, error: '계정 보안 키를 복호화할 수 없습니다.' };
+    }
+
+    this.recordLoginAttempt(true);
+    storedAcc.lastLoginAt = Date.now();
+    this.storeData.lastAccountId = cleanId;
+    this.saveStore();
+
+    const publicProfile = sanitizeAuthor({
+      uid: storedAcc.uid,
+      accountId: storedAcc.accountId,
+      name: storedAcc.displayName,
+      avatarColor: storedAcc.avatarColor
+    });
+
+    this.authenticatedSession = {
+      account: publicProfile,
+      publicKeyPem: storedAcc.publicKeyPem,
+      privateKeyPem
+    };
+
+    return {
+      ok: true,
+      currentAccount: publicProfile,
+      registeredAccounts: this.getRegisteredAccountList(),
+      lastAccountId: cleanId
+    };
+  }
+
+  async logoutAccount() {
+    await this.leaveCurrentRoom();
+    this.authenticatedSession = null;
+    return {
+      ok: true,
+      registeredAccounts: this.getRegisteredAccountList(),
+      lastAccountId: this.storeData.lastAccountId || ''
+    };
+  }
+
+  updateAccount({ displayName, currentPassword, newPassword }) {
+    if (!this.authenticatedSession) {
+      return { ok: false, error: '먼저 로그인해 주세요.' };
+    }
+    const cleanId = this.authenticatedSession.account.accountId;
+    const storedAcc = this.storeData.accounts[cleanId];
+    if (!storedAcc) {
+      return { ok: false, error: '계정 정보를 찾을 수 없습니다.' };
+    }
+
+    const nextDisplayName =
+      typeof displayName === 'string' && displayName.trim()
+        ? displayName.trim().slice(0, 20)
+        : storedAcc.displayName;
+
+    if (newPassword) {
+      const rate = this.checkLoginRateLimit();
+      if (!rate.allowed) return { ok: false, error: rate.error };
+
+      const validCurrent = this.verifyAccountPasswordHash(
+        currentPassword,
+        storedAcc.passwordSalt,
+        storedAcc.passwordHash
+      );
+      if (!validCurrent) {
+        this.recordLoginAttempt(false);
+        return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
+      }
+      this.recordLoginAttempt(true);
+
+      const rawNewPwd = String(newPassword);
+      if (rawNewPwd.trim().length < PASSWORD_MIN_LEN || rawNewPwd.length > PASSWORD_MAX_LEN) {
+        return {
+          ok: false,
+          error: `새 비밀번호는 공백 제외 ${PASSWORD_MIN_LEN}자 이상 ${PASSWORD_MAX_LEN}자 이하로 입력해 주세요.`
+        };
+      }
+
+      storedAcc.passwordSalt = crypto.randomBytes(16).toString('hex');
+      storedAcc.passwordHash = crypto
+        .scryptSync(rawNewPwd, storedAcc.passwordSalt, 64)
+        .toString('hex');
+      storedAcc.privateKeyEncrypted = encryptSecretWithPassword(
+        this.authenticatedSession.privateKeyPem,
+        rawNewPwd
+      );
+    }
+
+    storedAcc.displayName = nextDisplayName;
+    this.saveStore();
+
+    this.authenticatedSession.account = {
+      ...this.authenticatedSession.account,
+      name: nextDisplayName
+    };
+    if (this.activeSession?.mode === 'host' && this.activeSession.room) {
+      this.activeSession.room.hostProfile = this.authenticatedSession.account;
+      this.broadcastRoomUpdate();
+    }
+
+    return {
+      ok: true,
+      currentAccount: this.authenticatedSession.account,
+      registeredAccounts: this.getRegisteredAccountList()
+    };
+  }
+
+  async deleteAccount({ currentPassword }) {
+    if (!this.authenticatedSession) {
+      return { ok: false, error: '먼저 로그인해 주세요.' };
+    }
+    const rate = this.checkLoginRateLimit();
+    if (!rate.allowed) return { ok: false, error: rate.error };
+
+    const cleanId = this.authenticatedSession.account.accountId;
+    const storedAcc = this.storeData.accounts[cleanId];
+    if (!storedAcc) {
+      return { ok: false, error: '계정 정보를 찾을 수 없습니다.' };
+    }
+    const valid = this.verifyAccountPasswordHash(
+      currentPassword,
+      storedAcc.passwordSalt,
+      storedAcc.passwordHash
+    );
+    if (!valid) {
+      this.recordLoginAttempt(false);
+      return { ok: false, error: '현재 비밀번호가 일치하지 않습니다.' };
+    }
+    this.recordLoginAttempt(true);
+
+    await this.leaveCurrentRoom();
+    delete this.storeData.accounts[cleanId];
+    if (this.storeData.lastAccountId === cleanId) {
+      const remaining = Object.keys(this.storeData.accounts);
+      this.storeData.lastAccountId = remaining[0] || '';
+    }
+    this.authenticatedSession = null;
+    this.saveStore();
+
+    return {
+      ok: true,
+      registeredAccounts: this.getRegisteredAccountList(),
+      lastAccountId: this.storeData.lastAccountId
+    };
   }
 
   // ============================================================================
   // 2. Host a Shared Room (방 만들기 & 호스트 서버 가동)
   // ============================================================================
   async hostRoom({ roomName, password, permissionMode }) {
-    const account = this.storeData.googleAccount;
+    const account = this.authenticatedSession?.account;
     if (!account) {
-      return { ok: false, error: '공유 스페이스를 사용하려면 먼저 Google 계정으로 로그인해 주세요.' };
+      return { ok: false, error: '공유 스페이스를 사용하려면 먼저 계정으로 로그인해 주세요.' };
     }
 
     const cleanName = String(roomName || '').trim().slice(0, 60);
@@ -878,6 +925,8 @@ class SharedRoomManager {
 
   async startHostNetworkServer(room, cipherKey) {
     this.sseClients.clear();
+    this.verifiedSessions.clear();
+    this.joinNonces.clear();
 
     const server = http.createServer((req, res) => {
       this.handleHostHttpRequest(req, res, room, cipherKey);
@@ -1003,6 +1052,23 @@ class SharedRoomManager {
       return;
     }
 
+    // 0) GET /api/challenge (Single-use nonce for Ed25519 identity verification)
+    if (req.method === 'GET' && reqUrl.pathname === '/api/challenge') {
+      const now = Date.now();
+      for (const [k, v] of this.joinNonces.entries()) {
+        if (v.expiresAt <= now) this.joinNonces.delete(k);
+      }
+      if (this.joinNonces.size >= 100) {
+        const oldestKey = this.joinNonces.keys().next().value;
+        if (oldestKey) this.joinNonces.delete(oldestKey);
+      }
+      const nonce = crypto.randomBytes(32).toString('hex');
+      this.joinNonces.set(nonce, { expiresAt: now + 60 * 1000 });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, nonce, roomId: room.roomId }));
+      return;
+    }
+
     // 1) POST /api/join
     if (req.method === 'POST' && reqUrl.pathname === '/api/join') {
       const rate = this.checkJoinRateLimit(remoteIp);
@@ -1028,6 +1094,51 @@ class SharedRoomManager {
 
         const decrypted = decryptPayload(body.envelope, cipherKey);
         const guestProfile = sanitizeAuthor(decrypted.profile);
+        const publicKeyPem = typeof decrypted.publicKeyPem === 'string' ? decrypted.publicKeyPem : '';
+        const nonce = typeof decrypted.nonce === 'string' ? decrypted.nonce : '';
+        const signature = typeof decrypted.signature === 'string' ? decrypted.signature : '';
+
+        // Single-use nonce & Ed25519 signature verification to prevent impersonation
+        const nonceEntry = this.joinNonces.get(nonce);
+        this.joinNonces.delete(nonce);
+        if (!nonceEntry || nonceEntry.expiresAt <= Date.now()) {
+          this.recordJoinAttempt(remoteIp, false);
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: '인증 챌린지가 만료되었거나 유효하지 않습니다.' }));
+          return;
+        }
+
+        let signatureVerified = false;
+        try {
+          const expectedFp = computePublicKeyFingerprint(publicKeyPem);
+          const expectedUid = `acct:${guestProfile.accountId}:${expectedFp}`;
+          if (
+            guestProfile.accountId &&
+            guestProfile.uid === expectedUid &&
+            signature &&
+            publicKeyPem
+          ) {
+            const signMsg = Buffer.from(
+              `${room.roomId}:${room.authToken}:${nonce}:${guestProfile.uid}`,
+              'utf8'
+            );
+            signatureVerified = crypto.verify(
+              null,
+              signMsg,
+              publicKeyPem,
+              Buffer.from(signature, 'base64')
+            );
+          }
+        } catch (_sigErr) {
+          signatureVerified = false;
+        }
+
+        if (!signatureVerified) {
+          this.recordJoinAttempt(remoteIp, false);
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: '계정 전자서명 검증에 실패했습니다.' }));
+          return;
+        }
 
         if ((room.kickedUids || []).includes(guestProfile.uid)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1037,9 +1148,15 @@ class SharedRoomManager {
 
         this.recordJoinAttempt(remoteIp, true);
 
+        const memberSessionToken = crypto.randomBytes(32).toString('hex');
+        this.verifiedSessions.set(memberSessionToken, {
+          profile: guestProfile,
+          issuedAt: Date.now()
+        });
+
         const joinSysMsg = {
           id: crypto.randomUUID(),
-          text: `${guestProfile.name}님이 방에 입장했습니다.`,
+          text: `${guestProfile.name} (@${guestProfile.accountId})님이 방에 입장했습니다.`,
           imageDataUrl: '',
           sharedNoteRef: null,
           author: guestProfile,
@@ -1052,6 +1169,7 @@ class SharedRoomManager {
 
         const responseEnvelope = encryptPayload(
           {
+            memberSessionToken,
             room: {
               roomId: room.roomId,
               roomName: room.roomName,
@@ -1096,18 +1214,18 @@ class SharedRoomManager {
         return;
       }
 
-      let guestProfile;
-      try {
-        const profileEnv = JSON.parse(req.headers['x-treenote-profile'] || '{}');
-        guestProfile = sanitizeAuthor(decryptPayload(profileEnv, cipherKey));
-      } catch (_e) {
+      const sessionToken = String(req.headers['x-treenote-session'] || '');
+      const verified = this.verifiedSessions.get(sessionToken);
+      if (!verified || !verified.profile) {
         this.recordJoinAttempt(remoteIp, false);
-        res.writeHead(400);
+        res.writeHead(403);
         res.end();
         return;
       }
+      const guestProfile = verified.profile;
 
       if ((room.kickedUids || []).includes(guestProfile.uid)) {
+        this.verifiedSessions.delete(sessionToken);
         res.writeHead(403);
         res.end();
         return;
@@ -1159,13 +1277,23 @@ class SharedRoomManager {
         return;
       }
 
+      const sessionToken = String(req.headers['x-treenote-session'] || '');
+      const verified = this.verifiedSessions.get(sessionToken);
+      if (!verified || !verified.profile) {
+        this.recordJoinAttempt(remoteIp, false);
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: '유효하지 않거나 만료된 멤버 세션입니다.' }));
+        return;
+      }
+      const actor = verified.profile;
+
       try {
         const body = await this.readJsonBody(req);
         const actionPayload = decryptPayload(body.envelope, cipherKey);
-        const actor = sanitizeAuthor(actionPayload.actor);
         this.recordJoinAttempt(remoteIp, true);
 
         if ((room.kickedUids || []).includes(actor.uid)) {
+          this.verifiedSessions.delete(sessionToken);
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: '강퇴된 사용자입니다.' }));
           return;
@@ -1233,9 +1361,10 @@ class SharedRoomManager {
   // 3. Join an Existing Shared Room (방 이름 + 비밀번호로 참가하기)
   // ============================================================================
   async joinRoom({ roomName, password, hostCode }) {
-    const account = this.storeData.googleAccount;
-    if (!account) {
-      return { ok: false, error: '공유 스페이스를 사용하려면 먼저 Google 계정으로 로그인해 주세요.' };
+    const authSess = this.authenticatedSession;
+    const account = authSess?.account;
+    if (!account || !authSess?.privateKeyPem || !authSess?.publicKeyPem) {
+      return { ok: false, error: '공유 스페이스를 사용하려면 먼저 계정으로 로그인해 주세요.' };
     }
 
     const cleanName = String(roomName || '').trim().slice(0, 60);
@@ -1269,9 +1398,32 @@ class SharedRoomManager {
       };
     }
 
-    // 2) Perform encrypted handshake with Host
+    // 2) Perform challenge-response + encrypted handshake with Host
     try {
-      const joinEnvelope = encryptPayload({ profile: account }, cipherKey);
+      const challengeRes = await this.httpGetJson(
+        `http://${endpoint.host}:${endpoint.port}/api/challenge`
+      );
+      if (!challengeRes?.ok || !challengeRes.nonce) {
+        return { ok: false, error: '호스트 인증 챌린지를 받아오지 못했습니다.' };
+      }
+
+      const signMsg = Buffer.from(
+        `${roomId}:${authToken}:${challengeRes.nonce}:${account.uid}`,
+        'utf8'
+      );
+      const signature = crypto
+        .sign(null, signMsg, authSess.privateKeyPem)
+        .toString('base64');
+
+      const joinEnvelope = encryptPayload(
+        {
+          profile: account,
+          publicKeyPem: authSess.publicKeyPem,
+          nonce: challengeRes.nonce,
+          signature
+        },
+        cipherKey
+      );
       const joinRes = await this.httpPostJson(
         `http://${endpoint.host}:${endpoint.port}/api/join`,
         {
@@ -1290,6 +1442,7 @@ class SharedRoomManager {
 
       const decrypted = decryptPayload(joinRes.envelope, cipherKey);
       const roomData = decrypted.room;
+      const memberSessionToken = decrypted.memberSessionToken;
 
       const inviteCode = encodeInviteCode(endpoint.host, endpoint.port);
       this.activeSession = {
@@ -1298,6 +1451,7 @@ class SharedRoomManager {
         roomName: roomData.roomName,
         cipherKey,
         authToken,
+        memberSessionToken,
         hostEndpoint: endpoint,
         inviteCode,
         room: roomData
@@ -1311,7 +1465,7 @@ class SharedRoomManager {
       });
       this.saveStore();
 
-      this.connectGuestEventStream(endpoint, authToken, cipherKey, account);
+      this.connectGuestEventStream(endpoint, authToken, cipherKey, memberSessionToken);
 
       return {
         ok: true,
@@ -1427,6 +1581,49 @@ class SharedRoomManager {
     });
   }
 
+  httpGetJson(urlStr) {
+    return new Promise((resolve, reject) => {
+      const parsedUrl = new URL(urlStr);
+      const req = http.get(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: parsedUrl.pathname + parsedUrl.search,
+          timeout: 5000
+        },
+        (res) => {
+          let totalBytes = 0;
+          const chunks = [];
+          let aborted = false;
+          res.on('data', (chunk) => {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_HTTP_BODY_BYTES) {
+              aborted = true;
+              req.destroy();
+              reject(new Error('응답 데이터 크기가 허용 한도를 초과했습니다.'));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => {
+            if (aborted) return;
+            try {
+              const raw = Buffer.concat(chunks).toString('utf8');
+              resolve(raw ? JSON.parse(raw) : {});
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('연결 시간이 초과되었습니다.'));
+      });
+    });
+  }
+
   httpPostJson(urlStr, payloadObj, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(urlStr);
@@ -1479,7 +1676,7 @@ class SharedRoomManager {
     });
   }
 
-  connectGuestEventStream(endpoint, authToken, cipherKey, account) {
+  connectGuestEventStream(endpoint, authToken, cipherKey, memberSessionToken) {
     if (this.guestEventReq) {
       try {
         this.guestEventReq.destroy();
@@ -1489,7 +1686,6 @@ class SharedRoomManager {
       this.guestEventReq = null;
     }
 
-    const profileEnv = JSON.stringify(encryptPayload(account, cipherKey));
     const req = http.request(
       {
         hostname: endpoint.host,
@@ -1498,7 +1694,7 @@ class SharedRoomManager {
         method: 'GET',
         headers: {
           'x-treenote-auth': authToken,
-          'x-treenote-profile': profileEnv
+          'x-treenote-session': String(memberSessionToken || '')
         }
       },
       (res) => {
@@ -1563,24 +1759,27 @@ class SharedRoomManager {
   // 4. Perform Room Actions (노트 작성/편집/정리/병합/채팅/노트박제/권한관리)
   // ============================================================================
   async dispatchRoomAction(action) {
-    if (!this.activeSession || !this.storeData.googleAccount) {
+    const actor = this.authenticatedSession?.account;
+    if (!this.activeSession || !actor) {
       return { ok: false, error: '참여 중인 방이 없습니다.' };
     }
-    const actor = this.storeData.googleAccount;
 
     if (this.activeSession.mode === 'host') {
       const res = this.applyRoomActionInternal(this.activeSession.room, action, actor, true);
       return { ...res, room: this.getActiveRoomSnapshot() };
     }
 
-    // Guest sends encrypted action to Host
+    // Guest sends encrypted action to Host (session verified server-side via memberSessionToken)
     try {
-      const { hostEndpoint, authToken, cipherKey } = this.activeSession;
-      const envelope = encryptPayload({ actor, action }, cipherKey);
+      const { hostEndpoint, authToken, cipherKey, memberSessionToken } = this.activeSession;
+      const envelope = encryptPayload({ action }, cipherKey);
       const res = await this.httpPostJson(
         `http://${hostEndpoint.host}:${hostEndpoint.port}/api/action`,
         { envelope },
-        { 'x-treenote-auth': authToken }
+        {
+          'x-treenote-auth': authToken,
+          'x-treenote-session': String(memberSessionToken || '')
+        }
       );
       return res;
     } catch (err) {
@@ -1593,7 +1792,8 @@ class SharedRoomManager {
       return { ok: false, error: '잘못된 요청입니다.' };
     }
 
-    const isOwner = isHostActor || actor.uid === room.hostProfile?.uid;
+    // STRICT: Only local Host IPC calls (isHostActor === true) get owner privileges
+    const isOwner = Boolean(isHostActor);
     const perm = room.permissionMode || 'all';
 
     // Check readonly mode (except chat messages which are still allowed in readonly rooms)
@@ -1853,6 +2053,11 @@ class SharedRoomManager {
           return { ok: false, error: '잘못된 대상입니다.' };
         }
         room.kickedUids = Array.from(new Set([...(room.kickedUids || []), targetUid]));
+        for (const [sessToken, sessVal] of this.verifiedSessions.entries()) {
+          if (sessVal.profile?.uid === targetUid) {
+            this.verifiedSessions.delete(sessToken);
+          }
+        }
         const client = this.sseClients.get(targetUid);
         if (client) {
           try {
@@ -1894,6 +2099,8 @@ class SharedRoomManager {
       }
     }
     this.sseClients.clear();
+    this.verifiedSessions.clear();
+    this.joinNonces.clear();
 
     if (this.httpServer) {
       await new Promise((resolve) => {

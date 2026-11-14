@@ -58,25 +58,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Bundle Default Google OAuth Config (if Secrets exist)
-        shell: bash
-        env:
-          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
-          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-        run: |
-          if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
-            node -e '
-              const fs = require("fs");
-              fs.writeFileSync("oauth-defaults.json", JSON.stringify({
-                clientId: (process.env.GOOGLE_OAUTH_CLIENT_ID || "").trim(),
-                clientSecret: (process.env.GOOGLE_OAUTH_CLIENT_SECRET || "").trim()
-              }), "utf8");
-              console.log("Bundled oauth-defaults.json for built-in Google login.");
-            '
-          else
-            echo "No GOOGLE_OAUTH_CLIENT_ID secret set; building without bundled OAuth defaults."
-          fi
-
       - name: Build Installer
         run: npm run dist
 

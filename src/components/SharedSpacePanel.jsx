@@ -25,17 +25,7 @@ function UserAvatar({ user, size = 'md' }) {
       : size === 'lg'
       ? 'w-10 h-10 text-sm'
       : 'w-8 h-8 text-xs';
-  const initial = (user?.name || user?.email || '?').trim().charAt(0).toUpperCase();
-
-  if (user?.picture) {
-    return (
-      <img
-        src={user.picture}
-        alt={user.name || 'User'}
-        className={`${sizeClass} rounded-full object-cover shrink-0 border border-white/20`}
-      />
-    );
-  }
+  const initial = (user?.name || user?.accountId || '?').trim().charAt(0).toUpperCase();
 
   return (
     <div
@@ -55,13 +45,26 @@ export function SharedSpacePanel({
 }) {
   // 1. Auth & Room State
   const [loadingInit, setLoadingInit] = useState(true);
-  const [googleAccount, setGoogleAccount] = useState(null);
-  const [hasOAuthClientId, setHasOAuthClientId] = useState(false);
-  const [hasOAuthClientSecret, setHasOAuthClientSecret] = useState(false);
-  const [oauthClientIdInput, setOauthClientIdInput] = useState('');
-  const [oauthClientSecretInput, setOauthClientSecretInput] = useState('');
-  const [showOAuthSetup, setShowOAuthSetup] = useState(false);
-  const [oauthLoading, setOauthLoading] = useState(false);
+  const [currentAccount, setCurrentAccount] = useState(null);
+  const [registeredAccounts, setRegisteredAccounts] = useState([]);
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup'
+  const [loginIdInput, setLoginIdInput] = useState('');
+  const [loginPasswordInput, setLoginPasswordInput] = useState('');
+  const [signupIdInput, setSignupIdInput] = useState('');
+  const [signupNameInput, setSignupNameInput] = useState('');
+  const [signupPasswordInput, setSignupPasswordInput] = useState('');
+  const [signupConfirmInput, setSignupConfirmInput] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const loginPasswordInputRef = useRef(null);
+
+  // Account Settings Modal State
+  const [showAccountSettings, setShowAccountSettings] = useState(false);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [currPwdInput, setCurrPwdInput] = useState('');
+  const [newPwdInput, setNewPwdInput] = useState('');
+  const [deletePwdInput, setDeletePwdInput] = useState('');
+  const [accountEditBusy, setAccountEditBusy] = useState(false);
 
   // Lobby inputs (Host / Join)
   const [recentRooms, setRecentRooms] = useState([]);
@@ -135,10 +138,11 @@ export function SharedSpacePanel({
       }
       const res = await api.getSharedState();
       if (mounted && res?.ok) {
-        setGoogleAccount(res.googleAccount || null);
-        setHasOAuthClientId(Boolean(res.hasOAuthClientId));
-        setHasOAuthClientSecret(Boolean(res.hasOAuthClientSecret));
-        setOauthClientIdInput(res.oauthClientId || '');
+        setCurrentAccount(res.currentAccount || null);
+        setRegisteredAccounts(res.registeredAccounts || []);
+        if (res.lastAccountId) {
+          setLoginIdInput(res.lastAccountId);
+        }
         setRecentRooms(res.recentRooms || []);
         setActiveRoom(res.activeRoom || null);
       }
@@ -163,19 +167,10 @@ export function SharedSpacePanel({
         })
       : null;
 
-    const unsubAuth = api?.onSharedAuthUpdated
-      ? api.onSharedAuthUpdated((info) => {
-          if (mounted && info?.googleAccount) {
-            setGoogleAccount(info.googleAccount);
-          }
-        })
-      : null;
-
     return () => {
       mounted = false;
       if (unsubRoom) unsubRoom();
       if (unsubDisc) unsubDisc();
-      if (unsubAuth) unsubAuth();
     };
   }, [api, showToast]);
 
@@ -195,55 +190,147 @@ export function SharedSpacePanel({
   }, [activeRoom?.notes, viewingSharedNote]);
 
   // ============================================================================
-  // Handlers: Google Authentication (Official OAuth 2.0 Web Browser Login)
+  // Handlers: Native TreeNote Account Auth (Sign Up / Log In / Account Settings)
   // ============================================================================
-  const handleBrowserOAuthLogin = async () => {
-    if (!api?.startGoogleOAuthLogin || oauthLoading) return;
-    setOauthLoading(true);
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    if (!api?.loginSharedAccount || authBusy) return;
+    setAuthError('');
+    setAuthBusy(true);
     try {
-      const res = await api.startGoogleOAuthLogin();
-      if (res?.ok && res.googleAccount) {
-        setGoogleAccount(res.googleAccount);
-        showToast?.(`Google 로그인 완료: ${res.googleAccount.name} ✓`, 'success');
-      } else if (res?.needsConfig) {
-        setShowOAuthSetup(true);
-        showToast?.('Google Cloud OAuth Client ID를 먼저 아래 설정에 등록해 주세요.', 'info');
-      } else if (res?.error) {
-        if (res.error.includes('Client Secret')) {
-          setShowOAuthSetup(true);
-        }
-        showToast?.(res.error, 'error');
+      const res = await api.loginSharedAccount({
+        accountId: loginIdInput,
+        password: loginPasswordInput
+      });
+      if (res?.ok && res.currentAccount) {
+        setCurrentAccount(res.currentAccount);
+        setRegisteredAccounts(res.registeredAccounts || []);
+        setLoginPasswordInput('');
+        setAuthError('');
+        showToast?.(`로그인 완료: ${res.currentAccount.name} (@${res.currentAccount.accountId}) ✓`, 'success');
+      } else {
+        const err = res?.error || '아이디 또는 비밀번호를 확인해 주세요.';
+        setAuthError(err);
+        showToast?.(err, 'error');
       }
     } finally {
-      setOauthLoading(false);
+      setAuthBusy(false);
     }
   };
 
-  const handleSaveOAuthConfig = async (e) => {
+  const handleSignupSubmit = async (e) => {
     e.preventDefault();
-    if (!api?.saveGoogleOAuthConfig) return;
-    const res = await api.saveGoogleOAuthConfig({
-      clientId: oauthClientIdInput,
-      clientSecret: oauthClientSecretInput
-    });
-    if (res?.ok) {
-      setHasOAuthClientId(Boolean(res.hasOAuthClientId));
-      setHasOAuthClientSecret(Boolean(res.hasOAuthClientSecret));
-      setOauthClientSecretInput('');
-      setShowOAuthSetup(false);
-      showToast?.('Google OAuth 설정이 저장되었습니다. Google 로그인 페이지를 엽니다...', 'success');
-      await handleBrowserOAuthLogin();
-    } else {
-      showToast?.(res?.error || 'Google OAuth 설정을 저장하지 못했습니다.', 'error');
+    if (!api?.registerSharedAccount || authBusy) return;
+    setAuthError('');
+    if (signupPasswordInput !== signupConfirmInput) {
+      const msg = '비밀번호와 비밀번호 확인이 일치하지 않습니다.';
+      setAuthError(msg);
+      showToast?.(msg, 'error');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const res = await api.registerSharedAccount({
+        accountId: signupIdInput,
+        displayName: signupNameInput,
+        password: signupPasswordInput,
+        confirmPassword: signupConfirmInput
+      });
+      if (res?.ok && res.accountId) {
+        setRegisteredAccounts(res.registeredAccounts || []);
+        setAuthMode('login');
+        setLoginIdInput(res.accountId);
+        setLoginPasswordInput('');
+        setSignupIdInput('');
+        setSignupNameInput('');
+        setSignupPasswordInput('');
+        setSignupConfirmInput('');
+        setAuthError('');
+        showToast?.(`회원가입 완료! '${res.accountId}' 계정으로 로그인해 주세요.`, 'success');
+        setTimeout(() => {
+          loginPasswordInputRef.current?.focus();
+        }, 50);
+      } else {
+        const err = res?.error || '회원가입을 완료하지 못했습니다.';
+        setAuthError(err);
+        showToast?.(err, 'error');
+      }
+    } finally {
+      setAuthBusy(false);
     }
   };
 
-  const handleGoogleLogout = async () => {
-    if (!api?.signOutGoogle) return;
-    await api.signOutGoogle();
-    setGoogleAccount(null);
+  const handleLogout = async () => {
+    if (!api?.logoutSharedAccount) return;
+    const res = await api.logoutSharedAccount();
+    setCurrentAccount(null);
     setActiveRoom(null);
-    showToast?.('Google 계정에서 로그아웃되었습니다.', 'info');
+    setShowAccountSettings(false);
+    if (res?.registeredAccounts) setRegisteredAccounts(res.registeredAccounts);
+    if (res?.lastAccountId) setLoginIdInput(res.lastAccountId);
+    setLoginPasswordInput('');
+    setAuthMode('login');
+    setAuthError('');
+    showToast?.('계정에서 로그아웃되었습니다.', 'info');
+  };
+
+  const handleOpenAccountSettings = () => {
+    setEditDisplayName(currentAccount?.name || '');
+    setCurrPwdInput('');
+    setNewPwdInput('');
+    setDeletePwdInput('');
+    setShowAccountSettings(true);
+  };
+
+  const handleUpdateAccount = async (e) => {
+    e.preventDefault();
+    if (!api?.updateSharedAccount || accountEditBusy) return;
+    setAccountEditBusy(true);
+    try {
+      const res = await api.updateSharedAccount({
+        displayName: editDisplayName,
+        currentPassword: currPwdInput,
+        newPassword: newPwdInput
+      });
+      if (res?.ok && res.currentAccount) {
+        setCurrentAccount(res.currentAccount);
+        setCurrPwdInput('');
+        setNewPwdInput('');
+        setShowAccountSettings(false);
+        showToast?.('계정 정보가 업데이트되었습니다. ✓', 'success');
+      } else {
+        showToast?.(res?.error || '계정 정보를 수정하지 못했습니다.', 'error');
+      }
+    } finally {
+      setAccountEditBusy(false);
+    }
+  };
+
+  const handleDeleteAccount = async (e) => {
+    e.preventDefault();
+    if (!api?.deleteSharedAccount || accountEditBusy) return;
+    if (!deletePwdInput) {
+      showToast?.('계정 삭제를 위해 현재 비밀번호를 입력해 주세요.', 'error');
+      return;
+    }
+    setAccountEditBusy(true);
+    try {
+      const res = await api.deleteSharedAccount({ currentPassword: deletePwdInput });
+      if (res?.ok) {
+        setCurrentAccount(null);
+        setActiveRoom(null);
+        setRegisteredAccounts(res.registeredAccounts || []);
+        setLoginIdInput(res.lastAccountId || '');
+        setLoginPasswordInput('');
+        setDeletePwdInput('');
+        setShowAccountSettings(false);
+        showToast?.('계정이 삭제되었습니다.', 'info');
+      } else {
+        showToast?.(res?.error || '계정을 삭제하지 못했습니다.', 'error');
+      }
+    } finally {
+      setAccountEditBusy(false);
+    }
   };
 
   // ============================================================================
@@ -613,129 +700,239 @@ export function SharedSpacePanel({
   }
 
   // ============================================================================
-  // VIEW 1: Google Account Login Gate (!googleAccount)
+  // VIEW 1: Native Account Login / Sign-up Gate (!currentAccount)
   // ============================================================================
-  if (!googleAccount) {
+  if (!currentAccount) {
     return (
-      <div className="max-w-xl mx-auto my-8 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm p-7 flex flex-col gap-5">
+      <div className="max-w-lg mx-auto my-8 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm p-7 flex flex-col gap-5">
         <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center shrink-0">
-            <svg width="24" height="24" viewBox="0 0 48 48">
-              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-            </svg>
+          <div className="w-12 h-12 rounded-2xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center shrink-0 text-2xl">
+            🔐
           </div>
           <div>
             <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-              Google OAuth Required
+              {authMode === 'signup' ? 'TreeNote Account Sign Up' : 'TreeNote Account'}
             </span>
             <h2 className="text-lg font-extrabold text-zinc-900 dark:text-zinc-100">
-              공유 스페이스 로그인
+              {authMode === 'signup' ? '공유 스페이스 회원가입' : '공유 스페이스 로그인'}
             </h2>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              공유 방 호스트, 그룹 노트 정리, 실시간 채팅을 사용하려면 웹 브라우저에서 Google 계정으로 로그인해 주세요.
+              {authMode === 'signup'
+                ? '사용할 아이디와 비밀번호를 등록한 뒤 바로 로그인할 수 있습니다.'
+                : '아이디와 비밀번호로 로그인해 공유 방 호스트, 그룹 노트 정리, 실시간 채팅을 이용하세요.'}
             </p>
           </div>
         </div>
 
-        {/* 단일 Google 로그인 버튼 */}
-        <button
-          type="button"
-          onClick={handleBrowserOAuthLogin}
-          disabled={oauthLoading}
-          className="w-full py-3.5 px-5 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-60 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-3"
-        >
-          <svg width="20" height="20" viewBox="0 0 48 48" className="shrink-0">
-            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-          </svg>
-          <span>
-            {oauthLoading ? '브라우저에서 Google 인증 대기 중...' : 'Google로 로그인'}
-          </span>
-        </button>
-
-        {/* OAuth 상태 안내 (미설정 시에만 표시) & 작은 설정 토글 */}
-        <div className="flex flex-col gap-3">
-          <div className={`flex items-center ${hasOAuthClientId ? 'justify-end' : 'justify-between'} gap-2 text-[11px]`}>
-            {!hasOAuthClientId && (
-              <span className="text-amber-600 dark:text-amber-400 font-semibold">
-                ⚠️ 배포 전 앱 개발자의 Google OAuth Client ID 1회 등록이 필요합니다.
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowOAuthSetup((v) => !v)}
-              className={
-                hasOAuthClientId
-                  ? 'text-[11px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 underline underline-offset-2 transition-colors'
-                  : 'px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 font-semibold border border-line-light dark:border-line-dark shrink-0 transition-colors'
-              }
-            >
-              {showOAuthSetup ? '설정 닫기' : hasOAuthClientId ? '개발자 OAuth 설정' : '⚙️ OAuth 설정 및 방법'}
-            </button>
-          </div>
-
-          {showOAuthSetup && (
-            <form onSubmit={handleSaveOAuthConfig} className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-3 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-zinc-800 dark:text-zinc-200">
-                  Google Cloud OAuth 2.0 세팅 (최초 1회)
+        {authMode === 'login' ? (
+          <form onSubmit={handleLoginSubmit} className="flex flex-col gap-3.5">
+            {registeredAccounts.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+                  이 기기에 등록된 계정
                 </span>
-                {api?.openGoogleOAuthConsole && (
-                  <button
-                    type="button"
-                    onClick={() => api.openGoogleOAuthConsole()}
-                    className="px-2.5 py-1 rounded-lg bg-blue-600/10 hover:bg-blue-600/20 text-blue-600 dark:text-blue-400 text-[11px] font-bold shrink-0"
-                  >
-                    🌐 Google Cloud Console 열기
-                  </button>
-                )}
+                <div className="flex flex-wrap gap-1.5">
+                  {registeredAccounts.map((acc) => {
+                    const selected = loginIdInput.trim().toLowerCase() === acc.accountId;
+                    return (
+                      <button
+                        key={acc.uid}
+                        type="button"
+                        onClick={() => {
+                          setLoginIdInput(acc.accountId);
+                          setAuthError('');
+                          setTimeout(() => loginPasswordInputRef.current?.focus(), 20);
+                        }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-semibold border flex items-center gap-1.5 transition-colors ${
+                          selected
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 border-line-light dark:border-line-dark hover:border-blue-500/50'
+                        }`}
+                      >
+                        <span
+                          style={{ backgroundColor: acc.avatarColor || '#2563EB' }}
+                          className="w-4 h-4 rounded-full text-[9px] text-white font-bold flex items-center justify-center"
+                        >
+                          {(acc.name || acc.accountId).charAt(0).toUpperCase()}
+                        </span>
+                        <span>@{acc.accountId}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
+            )}
 
-              <ol className="list-decimal list-inside space-y-1 text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                <li>Google Cloud Console에서 프로젝트를 만들고 <b>API 및 서비스 → OAuth 동의 화면</b>(대상: 외부)을 저장한 뒤, <b>게시 상태 → 앱 게시</b>를 누릅니다.</li>
-                <li><b>사용자 인증 정보 → + 사용자 인증 정보 만들기 → OAuth 클라이언트 ID</b>를 클릭합니다.</li>
-                <li>애플리케이션 유형에서 반드시 <b>데스크톱 앱(Desktop app)</b>을 선택 후 생성합니다.</li>
-                <li>발급된 <b>클라이언트 ID</b>와 <b>클라이언트 보안 비밀번호(Client Secret)</b>를 아래에 입력하면 즉시 Google 로그인 페이지가 열립니다.</li>
-              </ol>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                아이디
+              </label>
+              <input
+                type="text"
+                required
+                autoComplete="username"
+                value={loginIdInput}
+                onChange={(e) => {
+                  setLoginIdInput(e.target.value);
+                  setAuthError('');
+                }}
+                placeholder="아이디 입력 (예: alice_01)"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
 
-              <div className="flex flex-col gap-2 pt-1">
-                <input
-                  type="text"
-                  required
-                  value={oauthClientIdInput}
-                  onChange={(e) => setOauthClientIdInput(e.target.value)}
-                  placeholder="클라이언트 ID (예: 123456-abc.apps.googleusercontent.com)"
-                  className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
-                />
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                비밀번호
+              </label>
+              <input
+                ref={loginPasswordInputRef}
+                type="password"
+                required
+                autoComplete="current-password"
+                value={loginPasswordInput}
+                onChange={(e) => {
+                  setLoginPasswordInput(e.target.value);
+                  setAuthError('');
+                }}
+                placeholder="비밀번호 입력"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
+
+            {authError && (
+              <div className="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/25 text-xs font-semibold text-red-600 dark:text-red-400">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={authBusy}
+              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-bold shadow-sm transition-colors"
+            >
+              {authBusy ? '로그인 확인 중...' : '로그인'}
+            </button>
+
+            <div className="flex items-center justify-between pt-2 border-t border-line-light dark:border-line-dark text-xs">
+              <span className="text-zinc-500 dark:text-zinc-400">
+                계정이 아직 없으신가요?
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('signup');
+                  setAuthError('');
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-blue-600/10 hover:text-blue-600 dark:hover:text-blue-400 text-zinc-700 dark:text-zinc-200 font-bold border border-line-light dark:border-line-dark transition-colors"
+              >
+                회원가입
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleSignupSubmit} className="flex flex-col gap-3.5">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                아이디 <span className="font-normal text-zinc-400">(영문 소문자·숫자·_·-, 3~24자)</span>
+              </label>
+              <input
+                type="text"
+                required
+                autoComplete="username"
+                value={signupIdInput}
+                onChange={(e) => {
+                  setSignupIdInput(e.target.value);
+                  setAuthError('');
+                }}
+                placeholder="사용할 아이디 입력 (예: minsu_note)"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                표시 이름 <span className="font-normal text-zinc-400">(선택 · 비워두면 아이디로 표시)</span>
+              </label>
+              <input
+                type="text"
+                value={signupNameInput}
+                onChange={(e) => setSignupNameInput(e.target.value)}
+                placeholder="방에 표시될 이름"
+                className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                  비밀번호 <span className="font-normal text-zinc-400">(6자 이상)</span>
+                </label>
                 <input
                   type="password"
-                  required={!hasOAuthClientSecret}
-                  value={oauthClientSecretInput}
-                  onChange={(e) => setOauthClientSecretInput(e.target.value)}
-                  placeholder={
-                    hasOAuthClientSecret
-                      ? '클라이언트 보안 비밀번호 (이미 저장됨 · 변경 시에만 입력)'
-                      : '클라이언트 보안 비밀번호 (GOCSPX-... · 데스크톱 앱 필수)'
-                  }
-                  className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  required
+                  minLength={6}
+                  autoComplete="new-password"
+                  value={signupPasswordInput}
+                  onChange={(e) => {
+                    setSignupPasswordInput(e.target.value);
+                    setAuthError('');
+                  }}
+                  placeholder="비밀번호"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                 />
               </div>
 
-              <div className="flex justify-end gap-2">
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors"
-                >
-                  저장 후 Google로 로그인
-                </button>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                  비밀번호 확인
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  autoComplete="new-password"
+                  value={signupConfirmInput}
+                  onChange={(e) => {
+                    setSignupConfirmInput(e.target.value);
+                    setAuthError('');
+                  }}
+                  placeholder="비밀번호 재입력"
+                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-sm text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
               </div>
-            </form>
-          )}
+            </div>
+
+            {authError && (
+              <div className="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/25 text-xs font-semibold text-red-600 dark:text-red-400">
+                {authError}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('login');
+                  setAuthError('');
+                }}
+                className="px-4 py-3 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-sm font-bold border border-line-light dark:border-line-dark transition-colors"
+              >
+                로그인으로 돌아가기
+              </button>
+              <button
+                type="submit"
+                disabled={authBusy}
+                className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-bold shadow-sm transition-colors"
+              >
+                {authBusy ? '계정 생성 중...' : '가입 완료'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        <div className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+          🛡️ 비밀번호는 <code className="font-mono text-zinc-700 dark:text-zinc-200">scrypt</code>로 해시되고, 기기 식별 개인키는 <code className="font-mono text-zinc-700 dark:text-zinc-200">AES-256-GCM</code>으로 암호화 보관됩니다. 방 입장 시 <code className="font-mono text-zinc-700 dark:text-zinc-200">Ed25519</code> 전자서명과 세션 토큰으로 발신자를 검증합니다.
         </div>
       </div>
     );
@@ -747,29 +944,43 @@ export function SharedSpacePanel({
   if (!activeRoom) {
     return (
       <div className="flex flex-col gap-5">
-        {/* 상단 내 Google 계정 프로필 바 */}
+        {/* 상단 내 계정 프로필 바 */}
         <div className="bg-surface-light dark:bg-surface-dark p-4 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <UserAvatar user={googleAccount} size="lg" />
+            <UserAvatar user={currentAccount} size="lg" />
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
-                  {googleAccount.name}
+                  {currentAccount.name}
                 </span>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                  Google 인증됨
+                  TreeNote 계정
                 </span>
               </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">{googleAccount.email}</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                @{currentAccount.accountId}
+                {currentAccount.uid?.includes(':')
+                  ? ` · 키 지문 ${currentAccount.uid.split(':')[2]?.slice(0, 8) || ''}`
+                  : ''}
+              </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleGoogleLogout}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-600 dark:text-zinc-300 bg-muted-light dark:bg-muted-dark hover:bg-red-500/10 hover:text-red-500 border border-line-light dark:border-line-dark transition-colors"
-          >
-            계정 전환 / 로그아웃
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleOpenAccountSettings}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-canvas-light dark:bg-canvas-dark hover:border-blue-500/50 border border-line-light dark:border-line-dark transition-colors"
+            >
+              계정 설정
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-600 dark:text-zinc-300 bg-muted-light dark:bg-muted-dark hover:bg-red-500/10 hover:text-red-500 border border-line-light dark:border-line-dark transition-colors"
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
 
         {/* 방 호스트하기 vs 방 참가하기 2단 카드 */}
@@ -949,6 +1160,108 @@ export function SharedSpacePanel({
             </div>
           </div>
         )}
+
+        {/* 계정 설정 모달 (표시 이름 변경, 비밀번호 변경, 계정 삭제) */}
+        {showAccountSettings && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="w-full max-w-md bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-2xl p-5 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-3">
+                <div>
+                  <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                    계정 설정 (@{currentAccount.accountId})
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    표시 이름, 비밀번호 변경 또는 로컬 계정을 관리합니다.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAccountSettings(false)}
+                  className="text-sm text-zinc-400 hover:text-zinc-600"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateAccount} className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                    표시 이름
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editDisplayName}
+                    onChange={(e) => setEditDisplayName(e.target.value)}
+                    placeholder="표시 이름"
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                    새 비밀번호 <span className="font-normal text-zinc-400">(변경할 경우에만 입력)</span>
+                  </label>
+                  <input
+                    type="password"
+                    minLength={6}
+                    value={newPwdInput}
+                    onChange={(e) => setNewPwdInput(e.target.value)}
+                    placeholder="새 비밀번호 (6자 이상)"
+                    className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {newPwdInput && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                      현재 비밀번호 <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={currPwdInput}
+                      onChange={(e) => setCurrPwdInput(e.target.value)}
+                      placeholder="현재 비밀번호 확인"
+                      className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                    />
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={accountEditBusy}
+                  className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold transition-colors"
+                >
+                  {accountEditBusy ? '저장 중...' : '변경 내용 저장'}
+                </button>
+              </form>
+
+              <form
+                onSubmit={handleDeleteAccount}
+                className="pt-3 border-t border-line-light dark:border-line-dark flex flex-col gap-2"
+              >
+                <span className="text-[11px] font-bold text-red-500">계정 영구 삭제</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={deletePwdInput}
+                    onChange={(e) => setDeletePwdInput(e.target.value)}
+                    placeholder="삭제 확인용 비밀번호"
+                    className="flex-1 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-red-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={accountEditBusy}
+                    className="px-3 py-2 rounded-xl bg-red-500/15 hover:bg-red-600 text-red-600 hover:text-white text-xs font-bold border border-red-500/30 transition-colors shrink-0"
+                  >
+                    계정 삭제
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -956,7 +1269,7 @@ export function SharedSpacePanel({
   // ============================================================================
   // VIEW 3: Active Shared Room Workspace (Notes Board + Smart Organizer + Chat)
   // ============================================================================
-  const isHost = activeRoom.mode === 'host' || activeRoom.hostProfile?.uid === googleAccount.uid;
+  const isHost = activeRoom.mode === 'host' || activeRoom.hostProfile?.uid === currentAccount.uid;
 
   return (
     <div className="flex flex-col gap-4">
@@ -989,7 +1302,7 @@ export function SharedSpacePanel({
               </span>
             </div>
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-              방장: {activeRoom.hostProfile?.name} ({activeRoom.hostProfile?.email}) · 암호화 동기화 중
+              방장: {activeRoom.hostProfile?.name} (@{activeRoom.hostProfile?.accountId || 'host'}) · 암호화 동기화 중
             </p>
           </div>
         </div>
@@ -1010,7 +1323,7 @@ export function SharedSpacePanel({
               <div className="absolute right-0 mt-2 w-72 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
                 <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-2">
                   <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
-                    접속 중인 Google 멤버
+                    접속 중인 멤버
                   </span>
                   <button
                     type="button"
@@ -1029,7 +1342,9 @@ export function SharedSpacePanel({
                           <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
                             {m.name} {m.isHost && '👑'}
                           </div>
-                          <div className="text-[10px] text-zinc-400 truncate">{m.email}</div>
+                          <div className="text-[10px] text-zinc-400 truncate">
+                            {m.accountId ? `@${m.accountId}` : m.uid?.slice(0, 8)}
+                          </div>
                         </div>
                       </div>
                       {isHost && !m.isHost && (
@@ -1584,7 +1899,7 @@ export function SharedSpacePanel({
                   );
                 }
 
-                const isMine = msg.author?.uid === googleAccount.uid;
+                const isMine = msg.author?.uid === currentAccount.uid;
                 const timeStr = new Date(msg.createdAt || Date.now()).toLocaleTimeString('ko-KR', {
                   hour: '2-digit',
                   minute: '2-digit'
@@ -2009,7 +2324,11 @@ export function SharedSpacePanel({
                     </span>
                   )}
                   <span className="text-xs text-zinc-400">
-                    작성자: {viewingSharedNote.author?.name} ({viewingSharedNote.author?.email})
+                    작성자: {viewingSharedNote.author?.name} (
+                    {viewingSharedNote.author?.accountId
+                      ? `@${viewingSharedNote.author.accountId}`
+                      : viewingSharedNote.author?.uid?.slice(0, 8)}
+                    )
                   </span>
                 </div>
                 <h3 className="text-lg font-extrabold text-zinc-900 dark:text-zinc-100">

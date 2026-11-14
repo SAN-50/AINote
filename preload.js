@@ -34,12 +34,13 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
     ipcRenderer.on('updater:status', handler);
     return () => ipcRenderer.removeListener('updater:status', handler);
   },
-  // 공유 스페이스 (Google 계정 로그인 + 방 호스트/참가/채팅/정리)
+  // 공유 스페이스 (자체 계정 로그인 + 방 호스트/참가/채팅/정리)
   getSharedState: () => ipcRenderer.invoke('shared:get-state'),
-  saveGoogleOAuthConfig: (config) => ipcRenderer.invoke('shared:save-oauth-config', config),
-  startGoogleOAuthLogin: () => ipcRenderer.invoke('shared:google-oauth-login'),
-  openGoogleOAuthConsole: () => ipcRenderer.invoke('shared:open-oauth-console'),
-  signOutGoogle: () => ipcRenderer.invoke('shared:google-logout'),
+  registerSharedAccount: (payload) => ipcRenderer.invoke('shared:register-account', payload),
+  loginSharedAccount: (payload) => ipcRenderer.invoke('shared:login-account', payload),
+  logoutSharedAccount: () => ipcRenderer.invoke('shared:logout-account'),
+  updateSharedAccount: (payload) => ipcRenderer.invoke('shared:update-account', payload),
+  deleteSharedAccount: (payload) => ipcRenderer.invoke('shared:delete-account', payload),
   hostSharedRoom: (payload) => ipcRenderer.invoke('shared:host-room', payload),
   joinSharedRoom: (payload) => ipcRenderer.invoke('shared:join-room', payload),
   leaveSharedRoom: () => ipcRenderer.invoke('shared:leave-room'),
@@ -53,10 +54,5 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
     const handler = (_event, info) => callback(info);
     ipcRenderer.on('shared:room-disconnected', handler);
     return () => ipcRenderer.removeListener('shared:room-disconnected', handler);
-  },
-  onSharedAuthUpdated: (callback) => {
-    const handler = (_event, info) => callback(info);
-    ipcRenderer.on('shared:auth-updated', handler);
-    return () => ipcRenderer.removeListener('shared:auth-updated', handler);
   }
 });
