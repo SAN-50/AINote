@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   getSharedState: () => ipcRenderer.invoke('shared:get-state'),
   saveGoogleOAuthConfig: (config) => ipcRenderer.invoke('shared:save-oauth-config', config),
   startGoogleOAuthLogin: () => ipcRenderer.invoke('shared:google-oauth-login'),
-  signInGoogleProfile: (payload) => ipcRenderer.invoke('shared:google-profile-login', payload),
+  openGoogleOAuthConsole: () => ipcRenderer.invoke('shared:open-oauth-console'),
   signOutGoogle: () => ipcRenderer.invoke('shared:google-logout'),
   hostSharedRoom: (payload) => ipcRenderer.invoke('shared:host-room', payload),
   joinSharedRoom: (payload) => ipcRenderer.invoke('shared:join-room', payload),

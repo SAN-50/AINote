@@ -1122,9 +1122,10 @@ ipcMain.handle('shared:google-oauth-login', async (event) => {
   return res;
 });
 
-ipcMain.handle('shared:google-profile-login', (event, payload) => {
+ipcMain.handle('shared:open-oauth-console', (event) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
-  return sharedRoomManager.signInWithGoogleProfile(payload || {});
+  shell.openExternal('https://console.cloud.google.com/apis/credentials');
+  return { ok: true };
 });
 
 ipcMain.handle('shared:google-logout', (event) => {

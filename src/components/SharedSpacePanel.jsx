@@ -57,13 +57,10 @@ export function SharedSpacePanel({
   const [loadingInit, setLoadingInit] = useState(true);
   const [googleAccount, setGoogleAccount] = useState(null);
   const [hasOAuthClientId, setHasOAuthClientId] = useState(false);
+  const [hasOAuthClientSecret, setHasOAuthClientSecret] = useState(false);
   const [oauthClientIdInput, setOauthClientIdInput] = useState('');
   const [oauthClientSecretInput, setOauthClientSecretInput] = useState('');
   const [showOAuthSetup, setShowOAuthSetup] = useState(false);
-
-  // Quick Google Login inputs
-  const [googleEmailInput, setGoogleEmailInput] = useState('');
-  const [googleNameInput, setGoogleNameInput] = useState('');
   const [oauthLoading, setOauthLoading] = useState(false);
 
   // Lobby inputs (Host / Join)
@@ -140,6 +137,7 @@ export function SharedSpacePanel({
       if (mounted && res?.ok) {
         setGoogleAccount(res.googleAccount || null);
         setHasOAuthClientId(Boolean(res.hasOAuthClientId));
+        setHasOAuthClientSecret(Boolean(res.hasOAuthClientSecret));
         setOauthClientIdInput(res.oauthClientId || '');
         setRecentRooms(res.recentRooms || []);
         setActiveRoom(res.activeRoom || null);
@@ -197,35 +195,23 @@ export function SharedSpacePanel({
   }, [activeRoom?.notes, viewingSharedNote]);
 
   // ============================================================================
-  // Handlers: Google Authentication
+  // Handlers: Google Authentication (Official OAuth 2.0 Web Browser Login)
   // ============================================================================
-  const handleQuickGoogleLogin = async (e) => {
-    e.preventDefault();
-    if (!api?.signInGoogleProfile) return;
-    const res = await api.signInGoogleProfile({
-      email: googleEmailInput,
-      name: googleNameInput
-    });
-    if (res?.ok) {
-      setGoogleAccount(res.googleAccount);
-      showToast?.(`${res.googleAccount.name} (${res.googleAccount.email}) 계정으로 로그인되었습니다 ✓`, 'success');
-    } else {
-      showToast?.(res?.error || 'Google 로그인에 실패했습니다.', 'error');
-    }
-  };
-
   const handleBrowserOAuthLogin = async () => {
-    if (!api?.startGoogleOAuthLogin) return;
+    if (!api?.startGoogleOAuthLogin || oauthLoading) return;
     setOauthLoading(true);
     try {
       const res = await api.startGoogleOAuthLogin();
       if (res?.ok && res.googleAccount) {
         setGoogleAccount(res.googleAccount);
-        showToast?.(`Google 공식 인증 완료: ${res.googleAccount.name} ✓`, 'success');
+        showToast?.(`Google 로그인 완료: ${res.googleAccount.name} ✓`, 'success');
       } else if (res?.needsConfig) {
         setShowOAuthSetup(true);
-        showToast?.('Google Cloud Client ID를 먼저 입력하거나 아래 이메일 로그인을 이용해 주세요.', 'info');
+        showToast?.('Google Cloud OAuth Client ID를 먼저 아래 설정에 등록해 주세요.', 'info');
       } else if (res?.error) {
+        if (res.error.includes('Client Secret')) {
+          setShowOAuthSetup(true);
+        }
         showToast?.(res.error, 'error');
       }
     } finally {
@@ -242,8 +228,12 @@ export function SharedSpacePanel({
     });
     if (res?.ok) {
       setHasOAuthClientId(Boolean(res.hasOAuthClientId));
+      setHasOAuthClientSecret(Boolean(res.hasOAuthClientSecret));
+      setOauthClientSecretInput('');
       setShowOAuthSetup(false);
-      showToast?.('Google OAuth 설정이 저장되었습니다 ✓', 'success');
+      showToast?.('Google OAuth 설정이 저장되었습니다. [Google로 로그인] 버튼을 눌러 진행하세요 ✓', 'success');
+    } else {
+      showToast?.(res?.error || 'Google OAuth 설정을 저장하지 못했습니다.', 'error');
     }
   };
 
@@ -626,7 +616,7 @@ export function SharedSpacePanel({
   // ============================================================================
   if (!googleAccount) {
     return (
-      <div className="max-w-xl mx-auto my-6 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm p-7 flex flex-col gap-6">
+      <div className="max-w-xl mx-auto my-8 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm p-7 flex flex-col gap-5">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-2xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center shrink-0">
             <svg width="24" height="24" viewBox="0 0 48 48">
@@ -638,103 +628,105 @@ export function SharedSpacePanel({
           </div>
           <div>
             <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-              Google Account Required
+              Google OAuth Required
             </span>
             <h2 className="text-lg font-extrabold text-zinc-900 dark:text-zinc-100">
-              공유 스페이스 Google 계정 로그인
+              공유 스페이스 로그인
             </h2>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              공유 방 호스트, 그룹 노트 정리, 실시간 채팅을 사용하려면 Google 계정으로 로그인해 주세요.
+              공유 방 호스트, 그룹 노트 정리, 실시간 채팅을 사용하려면 웹 브라우저에서 Google 계정으로 로그인해 주세요.
             </p>
           </div>
         </div>
 
-        {/* 빠른 Google 계정 연결 폼 */}
-        <form onSubmit={handleQuickGoogleLogin} className="flex flex-col gap-3.5 bg-canvas-light dark:bg-canvas-dark p-4 rounded-xl border border-line-light dark:border-line-dark">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
-              ⚡ Google 계정으로 바로 시작하기
-            </span>
-            <span className="text-[11px] text-zinc-400">별도 콘솔 설정 없이 즉시 사용</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-semibold text-zinc-500">Google 이메일 (@gmail.com)</label>
-              <input
-                type="email"
-                required
-                value={googleEmailInput}
-                onChange={(e) => setGoogleEmailInput(e.target.value)}
-                placeholder="example@gmail.com"
-                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-semibold text-zinc-500">표시 이름 (프로필명)</label>
-              <input
-                type="text"
-                required
-                value={googleNameInput}
-                onChange={(e) => setGoogleNameInput(e.target.value)}
-                placeholder="홍길동"
-                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
-              />
-            </div>
-          </div>
-          <button
-            type="submit"
-            className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
-          >
-            <span>Google 계정 프로필로 로그인</span>
-          </button>
-        </form>
+        {/* 단일 Google 로그인 버튼 */}
+        <button
+          type="button"
+          onClick={handleBrowserOAuthLogin}
+          disabled={oauthLoading}
+          className="w-full py-3.5 px-5 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-60 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-3"
+        >
+          <svg width="20" height="20" viewBox="0 0 48 48" className="shrink-0">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          <span>
+            {oauthLoading ? '브라우저에서 Google 인증 대기 중...' : 'Google로 로그인'}
+          </span>
+        </button>
 
-        {/* 브라우저 OAuth 2.0 공식 인증 버튼 & 설정 */}
-        <div className="flex flex-col gap-2.5 pt-1 border-t border-line-light dark:border-line-dark">
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={handleBrowserOAuthLogin}
-              disabled={oauthLoading}
-              className="flex-1 py-2.5 px-4 rounded-xl bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-800 dark:text-zinc-200 transition-colors flex items-center justify-center gap-2"
-            >
-              <span>🌐 {oauthLoading ? '브라우저 인증 대기 중...' : '웹 브라우저로 Google OAuth 공식 로그인'}</span>
-            </button>
+        {/* OAuth 상태 안내 및 설정 토글 */}
+        <div className="flex flex-col gap-3 pt-2 border-t border-line-light dark:border-line-dark">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className={hasOAuthClientId ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-amber-600 dark:text-amber-400 font-semibold'}>
+              {hasOAuthClientId
+                ? '✓ Google OAuth 연결 준비됨 (클릭 시 Google 로그인 웹사이트가 열립니다)'
+                : '⚠️ 최초 1회 Google Cloud OAuth Client ID 등록이 필요합니다.'}
+            </span>
             <button
               type="button"
               onClick={() => setShowOAuthSetup((v) => !v)}
-              className="py-2.5 px-3 rounded-xl bg-muted-light dark:bg-muted-dark text-xs font-semibold text-zinc-600 dark:text-zinc-300 border border-line-light dark:border-line-dark"
-              title="Google Cloud OAuth Client ID 설정"
+              className="px-2.5 py-1 rounded-lg bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 font-semibold border border-line-light dark:border-line-dark shrink-0 transition-colors"
             >
-              ⚙️ OAuth 설정
+              ⚙️ {showOAuthSetup ? '설정 닫기' : 'OAuth 설정 및 방법'}
             </button>
           </div>
 
           {showOAuthSetup && (
-            <form onSubmit={handleSaveOAuthConfig} className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2.5 text-xs">
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-                Google Cloud Console에서 발급받은 <b>데스크톱 앱(Desktop App) OAuth Client ID</b>를 등록하면 크롬/엣지 브라우저를 통한 공식 OAuth 2.0 PKCE 로그인이 작동합니다.
-              </p>
-              <input
-                type="text"
-                value={oauthClientIdInput}
-                onChange={(e) => setOauthClientIdInput(e.target.value)}
-                placeholder="xxx.apps.googleusercontent.com (Client ID)"
-                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
-              />
-              <input
-                type="password"
-                value={oauthClientSecretInput}
-                onChange={(e) => setOauthClientSecretInput(e.target.value)}
-                placeholder="Client Secret (선택 사항)"
-                className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none"
-              />
+            <form onSubmit={handleSaveOAuthConfig} className="p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                  Google Cloud OAuth 2.0 세팅 방법 (최초 1회)
+                </span>
+                {api?.openGoogleOAuthConsole && (
+                  <button
+                    type="button"
+                    onClick={() => api.openGoogleOAuthConsole()}
+                    className="px-2.5 py-1 rounded-lg bg-blue-600/10 hover:bg-blue-600/20 text-blue-600 dark:text-blue-400 text-[11px] font-bold shrink-0"
+                  >
+                    🌐 Google Cloud Console 열기
+                  </button>
+                )}
+              </div>
+
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                <li>Google Cloud Console에서 프로젝트를 만들고 <b>API 및 서비스 → OAuth 동의 화면</b>(대상: 외부, 테스트 사용자에 본인 Gmail 추가)을 설정합니다.</li>
+                <li><b>사용자 인증 정보 → + 사용자 인증 정보 만들기 → OAuth 클라이언트 ID</b>를 클릭합니다.</li>
+                <li>애플리케이션 유형에서 반드시 <b>데스크톱 앱(Desktop app)</b>을 선택 후 생성합니다.</li>
+                <li>발급된 <b>클라이언트 ID</b>와 <b>클라이언트 보안 비밀번호(Client Secret)</b>를 아래에 입력하고 저장합니다.</li>
+              </ol>
+
+              <div className="flex flex-col gap-2 pt-1">
+                <input
+                  type="text"
+                  required
+                  value={oauthClientIdInput}
+                  onChange={(e) => setOauthClientIdInput(e.target.value)}
+                  placeholder="클라이언트 ID (예: 123456-abc.apps.googleusercontent.com)"
+                  className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+                <input
+                  type="password"
+                  required={!hasOAuthClientSecret}
+                  value={oauthClientSecretInput}
+                  onChange={(e) => setOauthClientSecretInput(e.target.value)}
+                  placeholder={
+                    hasOAuthClientSecret
+                      ? '클라이언트 보안 비밀번호 (이미 저장됨 · 변경 시에만 입력)'
+                      : '클라이언트 보안 비밀번호 (GOCSPX-... · 데스크톱 앱 필수)'
+                  }
+                  className="px-3 py-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-xs text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                />
+              </div>
+
               <div className="flex justify-end gap-2">
                 <button
                   type="submit"
-                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold"
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors"
                 >
-                  Client ID 저장
+                  OAuth 설정 저장
                 </button>
               </div>
             </form>

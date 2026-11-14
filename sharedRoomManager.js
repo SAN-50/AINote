@@ -328,8 +328,12 @@ class SharedRoomManager {
     if (!fs.existsSync(filePath)) return defaultStore;
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const savedGoogleAccount =
+        parsed.googleAccount && parsed.googleAccount.oauthVerified === true
+          ? { ...sanitizeAuthor(parsed.googleAccount), oauthVerified: true }
+          : null;
       return {
-        googleAccount: parsed.googleAccount ? sanitizeAuthor(parsed.googleAccount) : null,
+        googleAccount: savedGoogleAccount,
         oauthConfig: {
           clientId:
             typeof parsed.oauthConfig?.clientId === 'string'
@@ -362,10 +366,15 @@ class SharedRoomManager {
   }
 
   getPublicState() {
+    const effectiveClientId =
+      this.storeData.oauthConfig?.clientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
+    const effectiveClientSecret =
+      this.storeData.oauthConfig?.clientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
     return {
       googleAccount: this.storeData.googleAccount,
-      hasOAuthClientId: Boolean(this.storeData.oauthConfig?.clientId),
-      oauthClientId: this.storeData.oauthConfig?.clientId || '',
+      hasOAuthClientId: Boolean(effectiveClientId),
+      hasOAuthClientSecret: Boolean(effectiveClientSecret),
+      oauthClientId: effectiveClientId,
       recentRooms: this.storeData.recentRooms || [],
       activeRoom: this.getActiveRoomSnapshot()
     };
@@ -407,56 +416,41 @@ class SharedRoomManager {
   }
 
   // ============================================================================
-  // 1. Google Account Login (Official OAuth 2.0 PKCE Loopback + Quick Profile)
+  // 1. Google Account Login (Official OAuth 2.0 PKCE Loopback Only)
   // ============================================================================
   saveOAuthConfig({ clientId, clientSecret }) {
+    const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
+    const rawSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
+    if (!cleanClientId) {
+      return { ok: false, error: 'Google Cloud OAuth Client ID를 입력해 주세요.' };
+    }
+    const prevConfig = this.storeData.oauthConfig || {};
+    const nextSecret =
+      rawSecret || (prevConfig.clientId === cleanClientId ? prevConfig.clientSecret || '' : '');
+
     this.storeData.oauthConfig = {
-      clientId: typeof clientId === 'string' ? clientId.trim() : '',
-      clientSecret: typeof clientSecret === 'string' ? clientSecret.trim() : ''
+      clientId: cleanClientId,
+      clientSecret: nextSecret
     };
     this.saveStore();
     return {
       ok: true,
       hasOAuthClientId: Boolean(this.storeData.oauthConfig.clientId),
+      hasOAuthClientSecret: Boolean(this.storeData.oauthConfig.clientSecret),
       oauthClientId: this.storeData.oauthConfig.clientId
     };
   }
 
-  signInWithGoogleProfile({ email, name }) {
-    const cleanEmail = String(email || '')
-      .trim()
-      .toLowerCase();
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      return { ok: false, error: '올바른 Google 이메일 주소(예: example@gmail.com)를 입력해 주세요.' };
-    }
-    const cleanName = String(name || '').trim() || cleanEmail.split('@')[0];
-    const uid = `google:${crypto
-      .createHash('sha256')
-      .update(`treenote-google-uid:${cleanEmail}`)
-      .digest('hex')
-      .slice(0, 24)}`;
-
-    const profile = sanitizeAuthor({
-      uid,
-      email: cleanEmail,
-      name: cleanName,
-      picture: '',
-      avatarColor: pickAvatarColor(uid)
-    });
-
-    this.storeData.googleAccount = profile;
-    this.saveStore();
-    return { ok: true, googleAccount: profile };
-  }
-
   async startGoogleOAuthBrowserFlow() {
-    const clientId = this.storeData.oauthConfig?.clientId;
-    const clientSecret = this.storeData.oauthConfig?.clientSecret || '';
+    const clientId =
+      this.storeData.oauthConfig?.clientId || process.env.TREENOTE_GOOGLE_CLIENT_ID || '';
+    const clientSecret =
+      this.storeData.oauthConfig?.clientSecret || process.env.TREENOTE_GOOGLE_CLIENT_SECRET || '';
     if (!clientId) {
       return {
         ok: false,
         needsConfig: true,
-        error: 'Google Cloud OAuth Client ID가 설정되지 않았습니다.'
+        error: 'Google Cloud OAuth Client ID가 설정되지 않았습니다. OAuth 설정에서 Client ID를 먼저 입력해 주세요.'
       };
     }
 
@@ -477,6 +471,19 @@ class SharedRoomManager {
     const stateToken = crypto.randomBytes(16).toString('hex');
 
     return new Promise((resolve) => {
+      let settled = false;
+      let callbackReceived = false;
+      let timeoutId = null;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        resolve(result);
+      };
+
       const server = http.createServer(async (req, res) => {
         try {
           const reqUrl = new URL(req.url, 'http://127.0.0.1');
@@ -486,27 +493,33 @@ class SharedRoomManager {
             return;
           }
 
+          callbackReceived = true;
           const returnedState = reqUrl.searchParams.get('state');
           const code = reqUrl.searchParams.get('code');
           const errParam = reqUrl.searchParams.get('error');
 
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            Connection: 'close'
+          });
           res.end(`<!DOCTYPE html>
             <html lang="ko">
               <head><meta charset="utf-8"><title>나무 노트 - Google 로그인</title></head>
               <body style="font-family:sans-serif;background:#0F1014;color:#F3F4F6;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
                 <div style="background:#1C1E26;padding:32px 40px;border-radius:16px;border:1px solid #2A2D3A;text-align:center;">
-                  <h2 style="margin:0 0 8px 0;">🌲 나무 노트 Google 인증 완료</h2>
+                  <h2 style="margin:0 0 8px 0;">🌲 나무 노트 Google 인증 처리 완료</h2>
                   <p style="margin:0;color:#9CA3AF;font-size:14px;">이 브라우저 창을 닫고 나무 노트 앱으로 돌아가세요.</p>
                 </div>
               </body>
             </html>`);
 
           server.close();
-          this.oauthServer = null;
+          if (this.oauthServer === server) {
+            this.oauthServer = null;
+          }
 
           if (errParam || !code || returnedState !== stateToken) {
-            resolve({ ok: false, error: 'Google 로그인이 취소되었거나 상태 검증에 실패했습니다.' });
+            finish({ ok: false, error: 'Google 로그인이 취소되었거나 상태 검증에 실패했습니다.' });
             return;
           }
 
@@ -524,12 +537,21 @@ class SharedRoomManager {
             this.sendToRenderer('shared:auth-updated', {
               googleAccount: tokenData.profile
             });
-            resolve({ ok: true, googleAccount: tokenData.profile });
+            finish({ ok: true, googleAccount: tokenData.profile });
           } else {
-            resolve({ ok: false, error: tokenData.error });
+            finish({ ok: false, error: tokenData.error });
           }
         } catch (err) {
-          resolve({ ok: false, error: err.message });
+          finish({ ok: false, error: err.message });
+        }
+      });
+
+      server.on('close', () => {
+        if (this.oauthServer === server) {
+          this.oauthServer = null;
+        }
+        if (!callbackReceived) {
+          finish({ ok: false, error: 'Google 로그인이 중단되었습니다.' });
         }
       });
 
@@ -552,15 +574,15 @@ class SharedRoomManager {
         this.openExternalUrl(authUrl.toString());
       });
 
-      setTimeout(() => {
-        if (this.oauthServer === server) {
+      timeoutId = setTimeout(() => {
+        if (!callbackReceived && this.oauthServer === server) {
           try {
             server.close();
           } catch (_e) {
             // ignore
           }
           this.oauthServer = null;
-          resolve({ ok: false, error: 'Google 로그인 응답 시간이 초과되었습니다.' });
+          finish({ ok: false, error: 'Google 로그인 응답 시간이 초과되었습니다.' });
         }
       }, 180 * 1000);
     });
@@ -610,9 +632,13 @@ class SharedRoomManager {
               const body = Buffer.concat(chunks).toString('utf8');
               const parsed = JSON.parse(body);
               if (!parsed.id_token && !parsed.access_token) {
+                const rawDesc = String(parsed.error_description || parsed.error || '');
+                const friendlyError = rawDesc.includes('client_secret')
+                  ? 'Google OAuth Client Secret이 누락되었거나 일치하지 않습니다. OAuth 설정에서 Client Secret을 함께 입력해 주세요.'
+                  : rawDesc || 'Google 토큰 발급에 실패했습니다.';
                 resolve({
                   ok: false,
-                  error: parsed.error_description || 'Google 토큰 발급에 실패했습니다.'
+                  error: friendlyError
                 });
                 return;
               }
@@ -637,18 +663,21 @@ class SharedRoomManager {
                   }
 
                   const email = String(claims.email || '').toLowerCase();
-                  if (!email) {
-                    resolve({ ok: false, error: 'Google 계정 이메일 정보를 확인할 수 없습니다.' });
+                  if (!email || claims.email_verified === false) {
+                    resolve({ ok: false, error: '인증된 Google 계정 이메일 정보를 확인할 수 없습니다.' });
                     return;
                   }
                   const uid = `google:${claims.sub || email}`;
-                  const profile = sanitizeAuthor({
-                    uid,
-                    email,
-                    name: claims.name || email.split('@')[0],
-                    picture: claims.picture || '',
-                    avatarColor: pickAvatarColor(uid)
-                  });
+                  const profile = {
+                    ...sanitizeAuthor({
+                      uid,
+                      email,
+                      name: claims.name || email.split('@')[0],
+                      picture: claims.picture || '',
+                      avatarColor: pickAvatarColor(uid)
+                    }),
+                    oauthVerified: true
+                  };
                   resolve({ ok: true, profile });
                   return;
                 }
