@@ -1132,6 +1132,11 @@ ipcMain.handle('shared:join-room', async (event, payload) => {
   return await sharedRoomManager.joinRoom(payload || {});
 });
 
+ipcMain.handle('shared:join-by-code', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  return await sharedRoomManager.joinRoomByInviteCode(payload || {});
+});
+
 ipcMain.handle('shared:quick-enter-room', async (event, payload) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return await sharedRoomManager.quickEnterRoom(payload || {});
@@ -1217,9 +1222,124 @@ ipcMain.handle('shared:import-room', (event, payload) => {
   return sharedRoomManager.importHostedRoomBackup(payload || {});
 });
 
+const SHARED_CHAT_MIME_MAP = {
+  '.gif': 'image/gif',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.zip': 'application/zip',
+  '.7z': 'application/x-7z-compressed',
+  '.rar': 'application/vnd.rar',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.hwp': 'application/x-hwp',
+  '.hwpx': 'application/x-hwp',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm'
+};
+const MAX_SHARED_CHAT_FILE_BYTES = 3 * 1024 * 1024;
+
 ipcMain.handle('shared:delete-saved-room', async (event, payload) => {
   if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
   return await sharedRoomManager.deleteSavedRoom(payload?.roomId);
+});
+
+ipcMain.handle('shared:pick-chat-files', async (event, options) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  try {
+    const mode = options?.mode || 'any';
+    const filters =
+      mode === 'gif'
+        ? [{ name: 'GIF / 움직이는 이미지', extensions: ['gif', 'webp'] }]
+        : mode === 'image'
+        ? [{ name: '이미지 및 GIF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }]
+        : [
+            { name: '모든 파일 (최대 3MB)', extensions: ['*'] },
+            { name: '이미지 / GIF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+            { name: '문서 / 압축', extensions: ['pdf', 'txt', 'md', 'csv', 'docx', 'xlsx', 'pptx', 'hwp', 'hwpx', 'zip'] }
+          ];
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: mode === 'gif' ? 'GIF 파일 선택' : '채팅에 첨부할 파일 선택 (파일당 최대 3MB)',
+      properties: ['openFile', 'multiSelections'],
+      filters
+    });
+    if (canceled || !filePaths || filePaths.length === 0) {
+      return { ok: false, canceled: true };
+    }
+
+    const attachments = [];
+    const skipped = [];
+    for (const rawPath of filePaths.slice(0, 4)) {
+      if (!isSafeLocalPath(rawPath) || !fs.existsSync(rawPath)) continue;
+      const normalized = path.normalize(rawPath);
+      const stat = fs.statSync(normalized);
+      const name = path.basename(normalized);
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_SHARED_CHAT_FILE_BYTES) {
+        skipped.push(`${name} (3MB 초과)`);
+        continue;
+      }
+      const ext = path.extname(name).toLowerCase();
+      if (ext === '.html' || ext === '.htm' || ext === '.svg') {
+        skipped.push(`${name} (지원되지 않는 웹 스크립트 형식)`);
+        continue;
+      }
+      const mime = SHARED_CHAT_MIME_MAP[ext] || 'application/octet-stream';
+      const bytes = fs.readFileSync(normalized);
+      const dataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
+      attachments.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name,
+        mime,
+        size: stat.size,
+        dataUrl,
+        isImage: /^image\/(png|jpeg|jpg|gif|webp|bmp)$/.test(mime),
+        isGif: mime === 'image/gif'
+      });
+    }
+
+    return { ok: true, attachments, skipped };
+  } catch (err) {
+    return { ok: false, error: `파일을 불러오지 못했습니다: ${err.message}` };
+  }
+});
+
+ipcMain.handle('shared:save-attachment', async (event, payload) => {
+  if (!isTrustedIpcSender(event)) return { ok: false, error: 'Untrusted sender' };
+  try {
+    const rawDataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl.trim() : '';
+    const match = rawDataUrl.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!match || rawDataUrl.length > 8 * 1024 * 1024) {
+      return { ok: false, error: '유효하지 않은 첨부 파일 데이터입니다.' };
+    }
+    const rawName = path.basename(String(payload?.name || 'treenote-attachment')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') || 'treenote-attachment';
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: '첨부 파일 저장',
+      defaultPath: rawName
+    });
+    if (canceled || !filePath) {
+      return { ok: false, canceled: true };
+    }
+    const buf = Buffer.from(match[2], 'base64');
+    fs.writeFileSync(filePath, buf);
+    return { ok: true, filePath };
+  } catch (err) {
+    return { ok: false, error: `파일 저장 실패: ${err.message}` };
+  }
 });
 
 function formatUpdaterError(err) {

@@ -2,11 +2,15 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { normalizeContentToSafeHtml, getPlainText, sanitizeNoteHtml } from '../utils/sanitize';
 import { FormattingBar } from './FormattingBar';
 
+const MAX_CHAT_FILE_BYTES = 3 * 1024 * 1024;
+const CHAT_QUICK_EMOJIS = ['👍', '❤️', '✅', '😂', '🎉', '🔥', '👀', '👏', '🙏', '💡', '🚀', '📌'];
+const CHAT_REACTIONS = ['👍', '❤️', '✅', '😂', '🎉', '🔥', '👀'];
+
 const STATUS_BADGE_STYLES = {
-  중요: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30',
-  검토필요: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
-  확정: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
-  질문: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30'
+  중요: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35',
+  검토필요: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35',
+  확정: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35',
+  질문: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/35'
 };
 
 const SECTION_ACCENT_STYLES = {
@@ -17,6 +21,285 @@ const SECTION_ACCENT_STYLES = {
   zinc: 'border-t-zinc-500',
   rose: 'border-t-rose-500'
 };
+
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileExtensionBadge(name = '', mime = '') {
+  const extMatch = String(name).match(/\.([a-zA-Z0-9]{1,6})$/);
+  if (extMatch) return extMatch[1].toUpperCase();
+  if (mime.includes('pdf')) return 'PDF';
+  if (mime.includes('zip') || mime.includes('rar') || mime.includes('7z')) return 'ZIP';
+  if (mime.includes('audio')) return 'AUDIO';
+  if (mime.includes('video')) return 'VIDEO';
+  return 'FILE';
+}
+
+function readBrowserFileAsAttachment(file) {
+  return new Promise((resolve) => {
+    if (!file || file.size > MAX_CHAT_FILE_BYTES) {
+      resolve({ error: `${file?.name || '파일'} (3MB 초과)` });
+      return;
+    }
+    const lowerName = String(file.name || '').toLowerCase();
+    if (lowerName.endsWith('.html') || lowerName.endsWith('.htm') || lowerName.endsWith('.svg')) {
+      resolve({ error: `${file.name} (보안상 지원되지 않는 웹 파일)` });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) {
+        resolve({ error: `${file.name} 읽기 실패` });
+        return;
+      }
+      const mime = file.type || (lowerName.endsWith('.gif') ? 'image/gif' : 'application/octet-stream');
+      resolve({
+        attachment: {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name || '첨부파일',
+          mime,
+          size: file.size,
+          dataUrl,
+          isImage: /^image\/(png|jpeg|jpg|gif|webp|bmp)$/i.test(mime),
+          isGif: /^image\/gif$/i.test(mime) || lowerName.endsWith('.gif')
+        }
+      });
+    };
+    reader.onerror = () => resolve({ error: `${file.name} 읽기 실패` });
+    reader.readAsDataURL(file);
+  });
+}
+
+function Icon({ name, size = 14, className = '' }) {
+  const props = {
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    className: `shrink-0 ${className}`,
+    'aria-hidden': 'true'
+  };
+  switch (name) {
+    case 'grip':
+      return (
+        <svg {...props}>
+          <circle cx="9" cy="6" r="1" fill="currentColor" />
+          <circle cx="15" cy="6" r="1" fill="currentColor" />
+          <circle cx="9" cy="12" r="1" fill="currentColor" />
+          <circle cx="15" cy="12" r="1" fill="currentColor" />
+          <circle cx="9" cy="18" r="1" fill="currentColor" />
+          <circle cx="15" cy="18" r="1" fill="currentColor" />
+        </svg>
+      );
+    case 'paperclip':
+      return (
+        <svg {...props}>
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        </svg>
+      );
+    case 'image':
+      return (
+        <svg {...props}>
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+      );
+    case 'smile':
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+          <line x1="9" y1="9" x2="9.01" y2="9" />
+          <line x1="15" y1="9" x2="15.01" y2="9" />
+        </svg>
+      );
+    case 'send':
+      return (
+        <svg {...props}>
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+      );
+    case 'reply':
+      return (
+        <svg {...props}>
+          <polyline points="9 14 4 9 9 4" />
+          <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+        </svg>
+      );
+    case 'download':
+      return (
+        <svg {...props}>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      );
+    case 'pin':
+      return (
+        <svg {...props}>
+          <path d="M12 17v5" />
+          <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+        </svg>
+      );
+    case 'copy':
+      return (
+        <svg {...props}>
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      );
+    case 'edit':
+      return (
+        <svg {...props}>
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+        </svg>
+      );
+    case 'trash':
+      return (
+        <svg {...props}>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6" />
+          <path d="M14 11v6" />
+        </svg>
+      );
+    case 'plus':
+      return (
+        <svg {...props}>
+          <line x1="12" y1="5" x2="12" y2="19" />
+          <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+      );
+    case 'up':
+      return (
+        <svg {...props}>
+          <polyline points="18 15 12 9 6 15" />
+        </svg>
+      );
+    case 'down':
+      return (
+        <svg {...props}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      );
+    case 'left':
+      return (
+        <svg {...props}>
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      );
+    case 'right':
+      return (
+        <svg {...props}>
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      );
+    case 'board':
+      return (
+        <svg {...props}>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <line x1="9" y1="3" x2="9" y2="21" />
+          <line x1="15" y1="3" x2="15" y2="21" />
+        </svg>
+      );
+    case 'grid':
+      return (
+        <svg {...props}>
+          <rect x="3" y="3" width="7" height="7" rx="1" />
+          <rect x="14" y="3" width="7" height="7" rx="1" />
+          <rect x="14" y="14" width="7" height="7" rx="1" />
+          <rect x="3" y="14" width="7" height="7" rx="1" />
+        </svg>
+      );
+    case 'checkSquare':
+      return (
+        <svg {...props}>
+          <polyline points="9 11 12 14 22 4" />
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+      );
+    case 'users':
+      return (
+        <svg {...props}>
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </svg>
+      );
+    case 'link':
+      return (
+        <svg {...props}>
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+      );
+    case 'message':
+      return (
+        <svg {...props}>
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      );
+    case 'save':
+      return (
+        <svg {...props}>
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+      );
+    case 'settings':
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      );
+    case 'folder':
+      return (
+        <svg {...props}>
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+      );
+    case 'note':
+      return (
+        <svg {...props}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="16" y1="13" x2="8" y2="13" />
+          <line x1="16" y1="17" x2="8" y2="17" />
+        </svg>
+      );
+    case 'close':
+      return (
+        <svg {...props}>
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      );
+    case 'search':
+      return (
+        <svg {...props}>
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
 
 function UserAvatar({ user, size = 'md' }) {
   const sizeClass =
@@ -70,13 +353,17 @@ export function SharedSpacePanel({
   const [recentRooms, setRecentRooms] = useState([]);
   const [savedRooms, setSavedRooms] = useState([]);
   const [joinedRooms, setJoinedRooms] = useState([]);
+  const [joinedRoomOrderIds, setJoinedRoomOrderIds] = useState([]);
+  const [draggedJoinedRoomId, setDraggedJoinedRoomId] = useState(null);
+  const [dragOverJoinedRoomId, setDragOverJoinedRoomId] = useState(null);
   const [importBackupDraft, setImportBackupDraft] = useState(null);
   const [hostRoomName, setHostRoomName] = useState('');
   const [hostPassword, setHostPassword] = useState('');
   const [hostPermissionMode, setHostPermissionMode] = useState('all');
+  const [joinMode, setJoinMode] = useState('code'); // 'code' | 'credentials'
+  const [joinInviteOnlyCode, setJoinInviteOnlyCode] = useState('');
   const [joinRoomName, setJoinRoomName] = useState('');
   const [joinPassword, setJoinPassword] = useState('');
-  const [joinHostCode, setJoinHostCode] = useState('');
   const [roomActionBusy, setRoomActionBusy] = useState(false);
 
   // Active Room State
@@ -122,18 +409,39 @@ export function SharedSpacePanel({
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
-  // Chat Panel State
+  // Chat Panel State & Attachments & Replies & Reactions
   const [chatOpen, setChatOpen] = useState(true);
+  const [chatPanelWidth, setChatPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem('treenote_shared_chat_width'));
+      if (saved >= 290 && saved <= 560) return saved;
+    } catch (_e) {}
+    return 360;
+  });
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatImage, setChatImage] = useState('');
+  const [chatAttachments, setChatAttachments] = useState([]);
   const [chatShareNoteRef, setChatShareNoteRef] = useState(null);
+  const [chatReplyTarget, setChatReplyTarget] = useState(null);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatDragActive, setChatDragActive] = useState(false);
   const [showChatNotePicker, setShowChatNotePicker] = useState(false);
+  const [showChatEmojiPicker, setShowChatEmojiPicker] = useState(false);
+  const [activeReactionMsgId, setActiveReactionMsgId] = useState(null);
   const [showMembersPopover, setShowMembersPopover] = useState(false);
+  const [lightboxMedia, setLightboxMedia] = useState(null); // { src, name, isGif }
   const chatEndRef = useRef(null);
+  const chatInputRef = useRef(null);
+  const chatFileInputRef = useRef(null);
+  const chatGifInputRef = useRef(null);
 
-  // Drag & Drop state for Kanban sections
+  // Drag & Drop state for Notes & Board Sections
   const [draggedNoteId, setDraggedNoteId] = useState(null);
   const [dragOverSectionId, setDragOverSectionId] = useState(null);
+  const [dropTargetNote, setDropTargetNote] = useState(null); // { noteId, position: 'before' | 'after' }
+  const [draggedSectionId, setDraggedSectionId] = useState(null);
+  const [dragOverHeaderSectionId, setDragOverHeaderSectionId] = useState(null);
 
   // Load initial state & subscribe to real-time updates
   useEffect(() => {
@@ -197,6 +505,42 @@ export function SharedSpacePanel({
       if (updated) setViewingSharedNote(updated);
     }
   }, [activeRoom?.notes, viewingSharedNote]);
+
+  // Load saved joinedRooms card order per account
+  useEffect(() => {
+    if (!currentAccount?.uid) {
+      setJoinedRoomOrderIds([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(`treenote_joined_order_${currentAccount.uid}`);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) setJoinedRoomOrderIds(parsed);
+    } catch (_e) {
+      setJoinedRoomOrderIds([]);
+    }
+  }, [currentAccount?.uid]);
+
+  // Drag split resizer between Group Notes and Messenger
+  useEffect(() => {
+    if (!isResizingSplit) return;
+    const onMove = (e) => {
+      const nextWidth = Math.max(290, Math.min(540, window.innerWidth - e.clientX - 36));
+      setChatPanelWidth(nextWidth);
+    };
+    const onUp = () => {
+      setIsResizingSplit(false);
+      try {
+        localStorage.setItem('treenote_shared_chat_width', String(chatPanelWidth));
+      } catch (_e) {}
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizingSplit, chatPanelWidth]);
 
   // ============================================================================
   // Handlers: Native TreeNote Account Auth (Sign Up / Log In / Account Settings)
@@ -379,8 +723,7 @@ export function SharedSpacePanel({
     try {
       const res = await api.joinSharedRoom({
         roomName: joinRoomName,
-        password: joinPassword,
-        hostCode: joinHostCode
+        password: joinPassword
       });
       if (res?.ok && res.room) {
         setActiveRoom(res.room);
@@ -391,6 +734,30 @@ export function SharedSpacePanel({
         showToast?.(`'${res.room.roomName}' 방에 입장했습니다 ✓`, 'success');
       } else {
         showToast?.(res?.error || '방 입장에 실패했습니다.', 'error');
+      }
+    } finally {
+      setRoomActionBusy(false);
+    }
+  };
+
+  const handleJoinByInviteCode = async (e) => {
+    e.preventDefault();
+    if (!api?.joinSharedRoomByCode || roomActionBusy) return;
+    setRoomActionBusy(true);
+    try {
+      const res = await api.joinSharedRoomByCode({
+        inviteCode: joinInviteOnlyCode
+      });
+      if (res?.ok && res.room) {
+        setActiveRoom(res.room);
+        setJoinInviteOnlyCode('');
+        const stateRes = await api.getSharedState();
+        if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
+        if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
+        if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
+        showToast?.(`초대 코드로 '${res.room.roomName}' 방에 입장했습니다 ✓`, 'success');
+      } else {
+        showToast?.(res?.error || '초대 코드 입장에 실패했습니다.', 'error');
       }
     } finally {
       setRoomActionBusy(false);
@@ -523,13 +890,20 @@ export function SharedSpacePanel({
 
   const handleCopyInviteInfo = async () => {
     if (!activeRoom) return;
-    const text = `[나무 노트 공유 방 초대]\n• 방 이름: ${activeRoom.roomName}\n• 초대 코드: ${activeRoom.inviteCode || '같은 네트워크 자동 탐색'}`;
+    const text = activeRoom.inviteToken || activeRoom.inviteCode || '';
+    if (!text) {
+      showToast?.('복사할 초대 코드가 아직 준비되지 않았습니다.', 'info');
+      return;
+    }
     if (api?.writeSystemClipboard) {
       await api.writeSystemClipboard({ text });
     } else {
       navigator.clipboard?.writeText(text);
     }
-    showToast?.('방 이름과 초대 코드가 복사되었습니다 ✓', 'success');
+    showToast?.(
+      '초대 코드가 복사되었습니다. 상대방은 이 코드만 입력하면 바로 입장할 수 있습니다 ✓',
+      'success'
+    );
   };
 
   // ============================================================================
@@ -812,25 +1186,193 @@ export function SharedSpacePanel({
   };
 
   // ============================================================================
-  // Handlers: Real-Time Group Chat & Promote to Note
+  // Handlers: Reorder Notes, Sections, Joined Rooms & Real-Time Group Chat
   // ============================================================================
+  const orderedJoinedRooms = useMemo(() => {
+    if (!joinedRooms.length) return [];
+    const orderIdx = new Map(joinedRoomOrderIds.map((id, i) => [id, i]));
+    return [...joinedRooms].sort((a, b) => {
+      const ai = orderIdx.has(a.roomId) ? orderIdx.get(a.roomId) : 9999;
+      const bi = orderIdx.has(b.roomId) ? orderIdx.get(b.roomId) : 9999;
+      return ai - bi;
+    });
+  }, [joinedRooms, joinedRoomOrderIds]);
+
+  const handleReorderJoinedRoom = (fromRoomId, toRoomId) => {
+    if (!fromRoomId || !toRoomId || fromRoomId === toRoomId) return;
+    const ids = orderedJoinedRooms.map((r) => r.roomId);
+    const fromIdx = ids.indexOf(fromRoomId);
+    const toIdx = ids.indexOf(toRoomId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = ids.splice(fromIdx, 1);
+    ids.splice(toIdx, 0, moved);
+    setJoinedRoomOrderIds(ids);
+    if (currentAccount?.uid) {
+      try {
+        localStorage.setItem(`treenote_joined_order_${currentAccount.uid}`, JSON.stringify(ids));
+      } catch (_e) {}
+    }
+  };
+
+  const handleMoveJoinedRoomByStep = (roomId, delta) => {
+    const ids = orderedJoinedRooms.map((r) => r.roomId);
+    const idx = ids.indexOf(roomId);
+    const nextIdx = idx + delta;
+    if (idx === -1 || nextIdx < 0 || nextIdx >= ids.length) return;
+    handleReorderJoinedRoom(roomId, ids[nextIdx]);
+  };
+
+  const handleReorderNote = async ({ noteId, targetSectionId, targetNoteId, position, direction }) => {
+    if (!noteId || !api?.dispatchSharedAction) return;
+    const res = await api.dispatchSharedAction({
+      type: 'REORDER_NOTE',
+      noteId,
+      targetSectionId,
+      targetNoteId,
+      position,
+      direction
+    });
+    if (!res?.ok) {
+      showToast?.(res?.error || '노트 순서를 변경하지 못했습니다.', 'error');
+    }
+  };
+
+  const handleReorderSections = async ({ sectionId, targetSectionId, position, direction }) => {
+    if (!sectionId || !api?.dispatchSharedAction) return;
+    const res = await api.dispatchSharedAction({
+      type: 'REORDER_SECTIONS',
+      sectionId,
+      targetSectionId,
+      position,
+      direction
+    });
+    if (!res?.ok) {
+      showToast?.(res?.error || '섹션 순서를 변경하지 못했습니다.', 'error');
+    }
+  };
+
+  const appendChatAttachmentList = (newItems, skipped = []) => {
+    if (skipped.length > 0) {
+      showToast?.(`첨부 제외됨: ${skipped.join(', ')}`, 'error');
+    }
+    if (!newItems || newItems.length === 0) return;
+    setChatAttachments((prev) => {
+      const merged = [...prev];
+      for (const att of newItems) {
+        if (merged.length >= 4) {
+          showToast?.('한 번에 최대 4개 파일까지 첨부할 수 있습니다.', 'info');
+          break;
+        }
+        merged.push(att);
+      }
+      return merged;
+    });
+  };
+
+  const handlePickChatFilesNative = async (mode = 'any') => {
+    if (api?.pickSharedChatFiles) {
+      const res = await api.pickSharedChatFiles({ mode });
+      if (res?.ok) {
+        appendChatAttachmentList(res.attachments || [], res.skipped || []);
+      } else if (!res?.canceled && res?.error) {
+        showToast?.(res.error, 'error');
+      }
+      return;
+    }
+    if (mode === 'gif') chatGifInputRef.current?.click();
+    else chatFileInputRef.current?.click();
+  };
+
+  const handleChatFileInputChange = async (e) => {
+    const fileList = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (fileList.length === 0) return;
+    const valid = [];
+    const skipped = [];
+    for (const f of fileList.slice(0, 4)) {
+      const out = await readBrowserFileAsAttachment(f);
+      if (out.attachment) valid.push(out.attachment);
+      else if (out.error) skipped.push(out.error);
+    }
+    appendChatAttachmentList(valid, skipped);
+  };
+
+  const handleChatDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setChatDragActive(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length === 0) return;
+    const valid = [];
+    const skipped = [];
+    for (const f of files.slice(0, 4)) {
+      const out = await readBrowserFileAsAttachment(f);
+      if (out.attachment) valid.push(out.attachment);
+      else if (out.error) skipped.push(out.error);
+    }
+    appendChatAttachmentList(valid, skipped);
+  };
+
+  const handleSaveAttachment = async (att) => {
+    if (!att?.dataUrl) return;
+    if (api?.saveSharedAttachment) {
+      const res = await api.saveSharedAttachment({ name: att.name || 'attachment', dataUrl: att.dataUrl });
+      if (res?.ok) {
+        showToast?.(`'${att.name || '파일'}' 저장 완료 ✓`, 'success');
+      } else if (!res?.canceled && res?.error) {
+        showToast?.(res.error, 'error');
+      }
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = att.dataUrl;
+    a.download = att.name || 'attachment';
+    a.click();
+  };
+
   const handleSendChat = async (e) => {
     e?.preventDefault();
-    if (!chatInput.trim() && !chatImage && !chatShareNoteRef) return;
-    const res = await api.dispatchSharedAction({
-      type: 'SEND_CHAT',
-      message: {
-        text: chatInput.trim(),
-        imageDataUrl: chatImage,
-        sharedNoteRef: chatShareNoteRef
+    if (chatSending) return;
+    if (!chatInput.trim() && !chatImage && chatAttachments.length === 0 && !chatShareNoteRef) return;
+    setChatSending(true);
+    try {
+      const res = await api.dispatchSharedAction({
+        type: 'SEND_CHAT',
+        message: {
+          text: chatInput.trim(),
+          imageDataUrl: chatImage,
+          attachments: chatAttachments,
+          replyTo: chatReplyTarget,
+          sharedNoteRef: chatShareNoteRef
+        }
+      });
+      if (res?.ok) {
+        setChatInput('');
+        setChatImage('');
+        setChatAttachments([]);
+        setChatReplyTarget(null);
+        setChatShareNoteRef(null);
+        setShowChatEmojiPicker(false);
+        if (chatInputRef.current) {
+          chatInputRef.current.style.height = 'auto';
+        }
+      } else {
+        showToast?.(res?.error || '메시지 전송 실패', 'error');
       }
+    } finally {
+      setChatSending(false);
+    }
+  };
+
+  const handleReactChat = async (messageId, emoji) => {
+    setActiveReactionMsgId(null);
+    const res = await api.dispatchSharedAction({
+      type: 'REACT_CHAT',
+      messageId,
+      emoji
     });
-    if (res?.ok) {
-      setChatInput('');
-      setChatImage('');
-      setChatShareNoteRef(null);
-    } else {
-      showToast?.(res?.error || '메시지 전송 실패', 'error');
+    if (!res?.ok) {
+      showToast?.(res?.error || '리액션 실패', 'error');
     }
   };
 
@@ -842,13 +1384,26 @@ export function SharedSpacePanel({
       folderId: selectedFolderId === 'all-notes' ? 'meeting' : selectedFolderId
     });
     if (res?.ok) {
-      showToast?.('채팅 메시지를 공유 노트로 박제했습니다 📌', 'success');
+      showToast?.('채팅 메시지를 공유 노트로 박제했습니다 ✓', 'success');
     } else {
       showToast?.(res?.error || '노트 박제 실패', 'error');
     }
   };
 
-  const handleChatPaste = (e) => {
+  const handleChatPaste = async (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length > 0) {
+      e.preventDefault();
+      const valid = [];
+      const skipped = [];
+      for (const f of files.slice(0, 4)) {
+        const out = await readBrowserFileAsAttachment(f);
+        if (out.attachment) valid.push(out.attachment);
+        else if (out.error) skipped.push(out.error);
+      }
+      appendChatAttachmentList(valid, skipped);
+      return;
+    }
     const items = e.clipboardData?.items;
     if (!items) return;
     for (const item of items) {
@@ -856,13 +1411,9 @@ export function SharedSpacePanel({
         e.preventDefault();
         const file = item.getAsFile();
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            setChatImage(reader.result);
-          }
-        };
-        reader.readAsDataURL(file);
+        const out = await readBrowserFileAsAttachment(file);
+        if (out.attachment) appendChatAttachmentList([out.attachment]);
+        else if (out.error) showToast?.(out.error, 'error');
         return;
       }
     }
@@ -1179,70 +1730,151 @@ export function SharedSpacePanel({
           </div>
         </div>
 
-        {/* 참여 중인 그룹 노트 (비밀번호 재입력 없이 바로 들어가기) */}
-        <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-blue-500/25 dark:border-blue-500/20 shadow-sm flex flex-col gap-3">
+        {/* 참여 중인 그룹 노트 (비밀번호 재입력 없이 바로 들어가기 + 카드 순서 끌어다 옮기기) */}
+        <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3.5">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-extrabold px-2.5 py-1 rounded-md bg-blue-600/10 text-blue-600 dark:text-blue-400">
-                🚪 참여 중인 그룹 노트 ({joinedRooms.length})
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 text-xs font-extrabold px-2.5 py-1 rounded-lg bg-blue-600/10 text-blue-700 dark:text-blue-400">
+                <Icon name="users" size={14} />
+                <span>참여 중인 그룹 노트 ({orderedJoinedRooms.length})</span>
               </span>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                한 번 들어가거나 만든 방은 비밀번호를 다시 입력할 필요 없이 바로 들어가고 나올 수 있습니다.
+              <span className="text-xs text-zinc-600 dark:text-zinc-300">
+                카드를 끌거나 화살표 버튼으로 순서를 정리할 수 있으며, 비밀번호 재입력 없이 바로 입장합니다.
               </span>
             </div>
           </div>
 
-          {joinedRooms.length === 0 ? (
-            <div className="py-4 text-center text-xs text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
+          {orderedJoinedRooms.length === 0 ? (
+            <div className="py-6 text-center text-xs text-zinc-500 dark:text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
               아직 참여 중인 그룹 노트가 없습니다. 아래에서 새 방을 만들거나 기존 방에 한 번 입장하면 이곳에 고정됩니다.
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {joinedRooms.map((jr) => (
-                <div
-                  key={jr.roomId}
-                  className="p-3.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark hover:border-blue-500/50 flex flex-col justify-between gap-2.5 transition-colors"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
-                        {jr.roomName}
-                      </span>
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${
-                          jr.role === 'host'
-                            ? 'bg-blue-600/15 text-blue-600 dark:text-blue-400'
-                            : 'bg-emerald-600/15 text-emerald-600 dark:text-emerald-400'
-                        }`}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {orderedJoinedRooms.map((jr, idx) => {
+                const isDragOverCard = dragOverJoinedRoomId === jr.roomId;
+                const isDraggingCard = draggedJoinedRoomId === jr.roomId;
+                return (
+                  <div
+                    key={jr.roomId}
+                    draggable
+                    onDragStart={(e) => {
+                      setDraggedJoinedRoomId(jr.roomId);
+                      if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', jr.roomId);
+                      }
+                    }}
+                    onDragEnd={() => {
+                      setDraggedJoinedRoomId(null);
+                      setDragOverJoinedRoomId(null);
+                    }}
+                    onDragOver={(e) => {
+                      if (!draggedJoinedRoomId || draggedJoinedRoomId === jr.roomId) return;
+                      e.preventDefault();
+                      setDragOverJoinedRoomId(jr.roomId);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget)) {
+                        setDragOverJoinedRoomId((prev) => (prev === jr.roomId ? null : prev));
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const fromId = draggedJoinedRoomId;
+                      setDraggedJoinedRoomId(null);
+                      setDragOverJoinedRoomId(null);
+                      if (fromId && fromId !== jr.roomId) {
+                        handleReorderJoinedRoom(fromId, jr.roomId);
+                      }
+                    }}
+                    className={`p-4 rounded-xl bg-canvas-light dark:bg-canvas-dark border flex flex-col justify-between gap-3 transition-all ${
+                      isDraggingCard
+                        ? 'opacity-60 scale-[0.98] border-blue-500'
+                        : isDragOverCard
+                        ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-500/5'
+                        : 'border-line-light dark:border-line-dark hover:border-blue-500/50'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-grab active:cursor-grabbing shrink-0 p-0.5"
+                            title="끌어서 그룹 노트 카드 순서 변경"
+                          >
+                            <Icon name="grip" size={14} />
+                          </span>
+                          <span className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                            {jr.roomName}
+                          </span>
+                        </div>
+                        <span
+                          className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
+                            jr.role === 'host'
+                              ? 'bg-blue-600/15 text-blue-700 dark:text-blue-400'
+                              : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              jr.role === 'host' ? 'bg-blue-600' : 'bg-emerald-500'
+                            }`}
+                          />
+                          {jr.role === 'host' ? '방장' : '참여 중'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-zinc-600 dark:text-zinc-300 mt-1.5 truncate">
+                        {jr.hostName ? `방장: ${jr.hostName} · ` : ''}노트 {jr.noteCount || 0}개 · 채팅{' '}
+                        {jr.messageCount || 0}개
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {orderedJoinedRooms.length > 1 && (
+                        <div className="flex items-center rounded-lg border border-line-light dark:border-line-dark bg-surface-light dark:bg-surface-dark overflow-hidden shrink-0">
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => handleMoveJoinedRoomByStep(jr.roomId, -1)}
+                            title="앞으로 이동"
+                            aria-label="참여 방 카드 앞으로 이동"
+                            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-30 transition-colors"
+                          >
+                            <Icon name="left" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === orderedJoinedRooms.length - 1}
+                            onClick={() => handleMoveJoinedRoomByStep(jr.roomId, 1)}
+                            title="뒤로 이동"
+                            aria-label="참여 방 카드 뒤로 이동"
+                            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-30 border-l border-line-light dark:border-line-dark transition-colors"
+                          >
+                            <Icon name="right" size={12} />
+                          </button>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        disabled={roomActionBusy}
+                        onClick={() => handleQuickEnterRoom(jr.roomId)}
+                        className="flex-1 py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                       >
-                        {jr.role === 'host' ? '👑 방장' : '🟢 참여 중'}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 truncate">
-                      {jr.hostName ? `방장: ${jr.hostName}` : ''} · 노트 {jr.noteCount || 0}개 · 채팅{' '}
-                      {jr.messageCount || 0}개
+                        <span>{roomActionBusy ? '연결 중...' : '바로 들어가기'}</span>
+                        {!roomActionBusy && <Icon name="right" size={12} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveJoinedRoom(jr.roomId, jr.roomName)}
+                        title="참여 목록에서 제거"
+                        className="px-2.5 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-red-500/10 text-zinc-500 hover:text-red-500 border border-line-light dark:border-line-dark text-xs font-semibold transition-colors cursor-pointer shrink-0"
+                      >
+                        제거
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={roomActionBusy}
-                      onClick={() => handleQuickEnterRoom(jr.roomId)}
-                      className="flex-1 py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold transition-colors"
-                    >
-                      {roomActionBusy ? '연결 중...' : '🚀 바로 들어가기'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveJoinedRoom(jr.roomId, jr.roomName)}
-                      title="참여 목록에서 제거"
-                      className="px-2 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-red-500/10 text-zinc-400 hover:text-red-500 border border-line-light dark:border-line-dark text-[11px] font-bold transition-colors"
-                    >
-                      제거
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1317,73 +1949,111 @@ export function SharedSpacePanel({
             </button>
           </form>
 
-          {/* 2) 방 참가하기 (방 이름 + 비밀번호로 입장) */}
-          <form
-            onSubmit={handleJoinRoom}
-            className="bg-surface-light dark:bg-surface-dark p-6 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col justify-between gap-4"
-          >
+          {/* 2) 방 참가하기 (초대 코드 단독 입장 / 방 이름 + 비밀번호 입장 분리) */}
+          <div className="bg-surface-light dark:bg-surface-dark p-6 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col justify-between gap-4">
             <div className="flex flex-col gap-3.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-600/10 text-emerald-600 dark:text-emerald-400">
-                  🔑 JOIN A ROOM
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-600/10 text-emerald-700 dark:text-emerald-400">
+                  <Icon name="link" size={13} />
+                  <span>JOIN A ROOM</span>
                 </span>
-                <span className="text-[11px] text-zinc-400">방 이름 + 비밀번호 입장</span>
+                <div className="inline-flex p-0.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark">
+                  <button
+                    type="button"
+                    onClick={() => setJoinMode('code')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                      joinMode === 'code'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white'
+                    }`}
+                  >
+                    초대 코드로 입장
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJoinMode('credentials')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                      joinMode === 'credentials'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white'
+                    }`}
+                  >
+                    방 이름 · 비밀번호 입장
+                  </button>
+                </div>
               </div>
+
               <div>
                 <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
-                  열려 있는 공유 방 들어가기
+                  {joinMode === 'code' ? '초대 코드만으로 바로 들어가기' : '방 이름과 비밀번호로 들어가기'}
                 </h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                  다른 PC·다른 네트워크에서도 방 이름과 비밀번호만으로 바로 입장됩니다.
+                <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-0.5">
+                  {joinMode === 'code'
+                    ? '방장이나 멤버에게 받은 초대 코드(TN1-...)만 붙여넣으면 방 이름과 비밀번호 없이 즉시 입장합니다.'
+                    : '방 호스트가 설정한 방 이름과 비밀번호만 입력해 다른 PC·네트워크에서도 입장합니다.'}
                 </p>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 이름</label>
-                <input
-                  type="text"
-                  required
-                  value={joinRoomName}
-                  onChange={(e) => setJoinRoomName(e.target.value)}
-                  placeholder="입장할 방 이름 입력"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
-                />
-              </div>
+              {joinMode === 'code' ? (
+                <form onSubmit={handleJoinByInviteCode} className="flex flex-col gap-3.5">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      초대 코드 (TN1-...)
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={joinInviteOnlyCode}
+                      onChange={(e) => setJoinInviteOnlyCode(e.target.value)}
+                      placeholder="전달받은 초대 코드 붙여넣기 (TN1-...)"
+                      className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={roomActionBusy || !joinInviteOnlyCode.trim()}
+                    className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors cursor-pointer"
+                  >
+                    {roomActionBusy ? '초대 코드로 방 연결 중...' : '초대 코드로 바로 입장하기'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleJoinRoom} className="flex flex-col gap-3.5">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 이름</label>
+                    <input
+                      type="text"
+                      required
+                      value={joinRoomName}
+                      onChange={(e) => setJoinRoomName(e.target.value)}
+                      placeholder="입장할 방 이름 입력"
+                      className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 비밀번호</label>
-                <input
-                  type="password"
-                  required
-                  value={joinPassword}
-                  onChange={(e) => setJoinPassword(e.target.value)}
-                  placeholder="방 비밀번호 입력"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
-                />
-              </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">방 비밀번호</label>
+                    <input
+                      type="password"
+                      required
+                      value={joinPassword}
+                      onChange={(e) => setJoinPassword(e.target.value)}
+                      placeholder="방 비밀번호 입력"
+                      className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs sm:text-sm font-normal text-zinc-900 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
-                  초대 코드 <span className="text-[11px] font-normal text-zinc-400">(선택 사항 · 비워두어도 온라인 자동 탐색)</span>
-                </label>
-                <input
-                  type="text"
-                  value={joinHostCode}
-                  onChange={(e) => setJoinHostCode(e.target.value)}
-                  placeholder="선택 사항: 초대 코드 또는 복사된 초대 메시지 붙여넣기"
-                  className="px-3.5 py-2.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:border-emerald-500"
-                />
-              </div>
+                  <button
+                    type="submit"
+                    disabled={roomActionBusy}
+                    className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors cursor-pointer"
+                  >
+                    {roomActionBusy ? '온라인 / LAN 방 탐색 중...' : '방 이름 · 비밀번호로 입장하기'}
+                  </button>
+                </form>
+              )}
             </div>
-
-            <button
-              type="submit"
-              disabled={roomActionBusy}
-              className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors mt-2"
-            >
-              {roomActionBusy ? '온라인 / LAN 방 탐색 중...' : '✨ 방 입장하기'}
-            </button>
-          </form>
+          </div>
         </div>
 
         {/* 저장된 내 공유 방 (호스트 생성 후 자동 저장됨 · 열기 / 백업 내보내기 / 영구 삭제 / 백업 불러오기) */}
@@ -1560,8 +2230,8 @@ export function SharedSpacePanel({
                     if (r.isHost) {
                       setHostRoomName(r.roomName);
                     } else {
+                      setJoinMode('credentials');
                       setJoinRoomName(r.roomName);
-                      setJoinHostCode(r.hostCode || '');
                     }
                     showToast?.(`'${r.roomName}' 방 정보가 입력칸에 채워졌습니다. 비밀번호를 입력해 주세요.`, 'info');
                   }}
@@ -1699,8 +2369,8 @@ export function SharedSpacePanel({
       {/* 1. 상단 방 컨트롤 헤더 */}
       <div className="bg-surface-light dark:bg-surface-dark px-4 py-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center shadow-sm shrink-0">
-            👥
+          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <Icon name="users" size={18} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -1708,34 +2378,40 @@ export function SharedSpacePanel({
                 {activeRoom.roomName}
               </h2>
               <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap ${
+                className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap ${
                   isHost
-                    ? 'bg-blue-600/15 text-blue-600 dark:text-blue-400 border border-blue-500/30'
-                    : 'bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                    ? 'bg-blue-600/15 text-blue-700 dark:text-blue-400 border border-blue-500/30'
+                    : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
                 }`}
               >
-                {isHost ? '👑 호스트' : '🟢 멤버'}
+                <span className={`w-1.5 h-1.5 rounded-full ${isHost ? 'bg-blue-600' : 'bg-emerald-500'}`} />
+                {isHost ? '호스트' : '멤버'}
               </span>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400 whitespace-nowrap">
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-700 dark:text-zinc-300 whitespace-nowrap">
                 {activeRoom.permissionMode === 'readonly'
-                  ? '🔒 읽기 전용'
+                  ? '읽기 전용'
                   : activeRoom.permissionMode === 'host-delete'
-                  ? '🛡️ 삭제 보호'
-                  : '✏️ 모두 편집'}
+                  ? '삭제 보호'
+                  : '모두 편집 가능'}
               </span>
               <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap border ${
+                className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap border ${
                   activeRoom.relayConnected
-                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25'
-                    : 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/25'
+                    : 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 border-zinc-500/25'
                 }`}
                 title="다른 PC·외부 네트워크 접속 가능 상태"
               >
-                {activeRoom.relayConnected ? '🌐 온라인 연결됨' : '📡 로컬 네트워크'}
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    activeRoom.relayConnected ? 'bg-emerald-500' : 'bg-zinc-400'
+                  }`}
+                />
+                {activeRoom.relayConnected ? '온라인 연결됨' : '로컬 네트워크'}
               </span>
             </div>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-              방장: {activeRoom.hostProfile?.name} (@{activeRoom.hostProfile?.accountId || 'host'}) · 💾 자동 저장됨
+            <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-0.5 truncate">
+              방장: {activeRoom.hostProfile?.name} (@{activeRoom.hostProfile?.accountId || 'host'}) · 자동 저장됨
               {activeRoom.lastSavedAt
                 ? ` (${new Date(activeRoom.lastSavedAt).toLocaleTimeString('ko-KR', {
                     hour: '2-digit',
@@ -1752,7 +2428,7 @@ export function SharedSpacePanel({
             <button
               type="button"
               onClick={() => setShowMembersPopover((v) => !v)}
-              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-2 whitespace-nowrap shrink-0"
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             >
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span>멤버 {(activeRoom.members || []).length}명</span>
@@ -1767,9 +2443,10 @@ export function SharedSpacePanel({
                   <button
                     type="button"
                     onClick={() => setShowMembersPopover(false)}
-                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
+                    className="p-1 rounded-md text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-100"
+                    aria-label="멤버 창 닫기"
                   >
-                    ✕
+                    <Icon name="close" size={14} />
                   </button>
                 </div>
                 <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
@@ -1779,9 +2456,9 @@ export function SharedSpacePanel({
                         <UserAvatar user={m} size="sm" />
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                            {m.name} {m.isHost && '👑'}
+                            {m.name} {m.isHost && <span className="text-[10px] text-blue-600 dark:text-blue-400">(방장)</span>}
                           </div>
-                          <div className="text-[10px] text-zinc-400 truncate">
+                          <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
                             {m.accountId ? `@${m.accountId}` : m.uid?.slice(0, 8)}
                           </div>
                         </div>
@@ -1792,7 +2469,7 @@ export function SharedSpacePanel({
                           onClick={() =>
                             api.dispatchSharedAction({ type: 'KICK_MEMBER', targetUid: m.uid })
                           }
-                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white shrink-0"
+                          className="text-[11px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white shrink-0"
                         >
                           내보내기
                         </button>
@@ -1802,7 +2479,9 @@ export function SharedSpacePanel({
                 </div>
                 {isHost && (
                   <div className="pt-2 border-t border-line-light dark:border-line-dark flex flex-col gap-1">
-                    <label className="text-[10px] font-bold text-zinc-400">방 편집 권한 변경</label>
+                    <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
+                      방 편집 권한 변경
+                    </label>
                     <select
                       value={activeRoom.permissionMode || 'all'}
                       onChange={(e) =>
@@ -1826,73 +2505,79 @@ export function SharedSpacePanel({
           <button
             type="button"
             onClick={handleCopyInviteInfo}
-            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             title="방 이름과 초대 코드 복사"
           >
-            🔗 초대 코드 복사
+            <Icon name="link" size={13} />
+            <span>초대 코드 복사</span>
           </button>
 
           <button
             type="button"
             onClick={() => setChatOpen((v) => !v)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               chatOpen
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 border-line-light dark:border-line-dark'
+                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 border-line-light dark:border-line-dark hover:bg-muted-light dark:hover:bg-muted-dark'
             }`}
           >
-            💬 채팅 ({(activeRoom.messages || []).length})
+            <Icon name="message" size={13} />
+            <span>채팅 ({(activeRoom.messages || []).length})</span>
           </button>
 
           <button
             type="button"
             onClick={handleSaveRoomNow}
-            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             title="현재 방 상태를 즉시 저장"
           >
-            💾 방 저장
+            <Icon name="save" size={13} />
+            <span>방 저장</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowRoomManageModal(true)}
-            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+            className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             title="백업 내보내기 및 방 설정·삭제"
           >
-            ⚙️ 방 관리
+            <Icon name="settings" size={13} />
+            <span>방 관리</span>
           </button>
 
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowJoinedRoomsPopover((v) => !v)}
-              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap shrink-0 transition-colors"
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
               title="참여 중인 다른 그룹 노트 바로 전환 또는 로비로 이동"
             >
-              🚪 참여 방 ({joinedRooms.length})
+              <Icon name="folder" size={13} />
+              <span>참여 방 ({orderedJoinedRooms.length})</span>
             </button>
 
             {showJoinedRoomsPopover && (
               <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-32px)] bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-xl p-3.5 z-40 flex flex-col gap-2.5">
                 <div className="flex items-center justify-between border-b border-line-light dark:border-line-dark pb-2">
                   <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
-                    참여 중인 그룹 노트 (비밀번호 없이 이동)
+                    참여 중인 그룹 노트 (바로 전환)
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowJoinedRoomsPopover(false)}
-                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
+                    className="p-1 rounded-md text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-100"
+                    aria-label="참여 방 목록 닫기"
                   >
-                    ✕
+                    <Icon name="close" size={14} />
                   </button>
                 </div>
                 <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
-                  {joinedRooms.length === 0 ? (
-                    <div className="text-[11px] text-zinc-400 py-3 text-center">
+                  {orderedJoinedRooms.length === 0 ? (
+                    <div className="text-xs text-zinc-500 dark:text-zinc-400 py-3 text-center">
                       저장된 참여 방이 없습니다.
                     </div>
                   ) : (
-                    joinedRooms.map((jr) => {
+                    orderedJoinedRooms.map((jr) => {
                       const isCurr = jr.roomId === activeRoom.roomId;
                       return (
                         <button
@@ -1908,18 +2593,18 @@ export function SharedSpacePanel({
                           }}
                           className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
                             isCurr
-                              ? 'bg-blue-600/10 border-blue-500/40 text-blue-600 dark:text-blue-400'
+                              ? 'bg-blue-600/10 border-blue-500/40 text-blue-700 dark:text-blue-400'
                               : 'bg-canvas-light dark:bg-canvas-dark hover:border-blue-500/40 border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
                           }`}
                         >
                           <div className="min-w-0">
                             <div className="text-xs font-bold truncate">{jr.roomName}</div>
-                            <div className="text-[10px] text-zinc-400 truncate">
-                              {jr.role === 'host' ? '👑 방장' : '🟢 참여 중'} · 노트 {jr.noteCount || 0}개
+                            <div className="text-[11px] text-zinc-600 dark:text-zinc-300 truncate">
+                              {jr.role === 'host' ? '방장' : '참여 중'} · 노트 {jr.noteCount || 0}개
                             </div>
                           </div>
-                          <span className="text-[10px] font-bold shrink-0">
-                            {isCurr ? '현재 방' : '이동 ↗'}
+                          <span className="text-[11px] font-bold shrink-0">
+                            {isCurr ? '현재 방' : '이동'}
                           </span>
                         </button>
                       );
@@ -1929,9 +2614,9 @@ export function SharedSpacePanel({
                 <button
                   type="button"
                   onClick={handleLeaveRoom}
-                  className="w-full py-2 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-bold transition-colors"
+                  className="w-full py-2 rounded-xl bg-muted-light dark:bg-muted-dark hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-100 text-xs font-bold transition-colors"
                 >
-                  ← 로비(방 목록)로 나가기
+                  로비(방 목록)로 나가기
                 </button>
               </div>
             )}
@@ -1940,7 +2625,7 @@ export function SharedSpacePanel({
           <button
             type="button"
             onClick={handleLeaveRoom}
-            className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors whitespace-nowrap shrink-0"
+            className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-600 text-red-600 dark:text-red-400 hover:text-white border border-red-500/20 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             방 나가기
           </button>
@@ -1948,7 +2633,7 @@ export function SharedSpacePanel({
       </div>
 
       {/* 2. 폴더(컬렉션) 정리 바 + 뷰 스위치 + 검색 + 액션 버튼 */}
-      <div className="bg-surface-light dark:bg-surface-dark p-3 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-2.5">
+      <div className="bg-surface-light dark:bg-surface-dark p-3.5 rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col gap-3">
         {/* 상단 줄: 폴더 탭 & 새 폴더 */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-1.5 flex-wrap min-w-0">
@@ -1959,15 +2644,15 @@ export function SharedSpacePanel({
                   <button
                     type="button"
                     onClick={() => setSelectedFolderId(folder.id)}
-                    className={`px-2.5 py-1 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                    className={`px-3 py-1.5 text-xs font-bold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                       isHost && folder.id !== 'all-notes' ? 'rounded-l-xl' : 'rounded-xl'
                     } ${
                       active
                         ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 shadow-sm'
-                        : 'bg-canvas-light dark:bg-canvas-dark text-zinc-600 dark:text-zinc-300 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
+                        : 'bg-canvas-light dark:bg-canvas-dark text-zinc-700 dark:text-zinc-200 hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark'
                     }`}
                   >
-                    <span>{folder.icon || '📁'}</span>
+                    <Icon name="folder" size={13} />
                     <span>{folder.name}</span>
                   </button>
                   {isHost && folder.id !== 'all-notes' && (
@@ -1975,13 +2660,14 @@ export function SharedSpacePanel({
                       type="button"
                       onClick={() => handleDeleteFolder(folder)}
                       title={`'${folder.name}' 폴더 삭제`}
-                      className={`px-1.5 py-1 rounded-r-xl text-[10px] font-bold border-y border-r transition-colors ${
+                      aria-label={`'${folder.name}' 폴더 삭제`}
+                      className={`px-2 py-1.5 rounded-r-xl text-xs font-bold border-y border-r transition-colors cursor-pointer ${
                         active
                           ? 'bg-zinc-800 dark:bg-zinc-200 text-zinc-300 dark:text-zinc-700 border-zinc-700 dark:border-zinc-300 hover:text-red-400'
-                          : 'bg-canvas-light dark:bg-canvas-dark text-zinc-400 hover:text-red-500 border-line-light dark:border-line-dark'
+                          : 'bg-canvas-light dark:bg-canvas-dark text-zinc-500 hover:text-red-500 border-line-light dark:border-line-dark'
                       }`}
                     >
-                      ✕
+                      <Icon name="close" size={11} />
                     </button>
                   )}
                 </div>
@@ -1989,33 +2675,35 @@ export function SharedSpacePanel({
             })}
 
             {showNewFolderInput ? (
-              <form onSubmit={handleAddFolder} className="flex items-center gap-1">
+              <form onSubmit={handleAddFolder} className="flex items-center gap-1.5">
                 <input
                   type="text"
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="새 폴더명"
                   autoFocus
-                  className="px-2.5 py-1 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs text-zinc-900 dark:text-white outline-none w-28"
+                  className="px-2.5 py-1.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-normal text-zinc-900 dark:text-white outline-none w-32"
                 />
-                <button type="submit" className="px-2 py-1 rounded-lg bg-blue-600 text-white text-xs font-bold">
+                <button type="submit" className="px-2.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold">
                   추가
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowNewFolderInput(false)}
-                  className="px-1.5 py-1 text-xs text-zinc-400"
+                  className="p-1.5 text-zinc-500 hover:text-zinc-700"
+                  aria-label="취소"
                 >
-                  ✕
+                  <Icon name="close" size={13} />
                 </button>
               </form>
             ) : (
               <button
                 type="button"
                 onClick={() => setShowNewFolderInput(true)}
-                className="px-2.5 py-1 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 whitespace-nowrap"
+                className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
               >
-                + 폴더 추가
+                <Icon name="plus" size={13} />
+                <span>폴더 추가</span>
               </button>
             )}
           </div>
@@ -2025,55 +2713,60 @@ export function SharedSpacePanel({
             <button
               type="button"
               onClick={() => setShowPersonalPicker(true)}
-              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 whitespace-nowrap"
+              className="px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-xs font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
             >
-              📤 내 노트 불러오기
+              <Icon name="note" size={13} />
+              <span>내 노트 불러오기</span>
             </button>
             <button
               type="button"
               onClick={() => openCreateNoteModal('idea')}
-              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm whitespace-nowrap"
+              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
             >
-              + 새 공유 노트
+              <Icon name="plus" size={14} />
+              <span>새 공유 노트</span>
             </button>
           </div>
         </div>
 
         {/* 하단 줄: 정리 뷰 모드 전환 + 상태 배지 필터 + 검색창 */}
-        <div className="flex items-center justify-between gap-2.5 flex-wrap pt-2 border-t border-line-light dark:border-line-dark">
+        <div className="flex items-center justify-between gap-2.5 flex-wrap pt-2.5 border-t border-line-light dark:border-line-dark">
           <div className="flex items-center gap-1 bg-canvas-light dark:bg-canvas-dark p-1 rounded-xl border border-line-light dark:border-line-dark flex-wrap">
             <button
               type="button"
               onClick={() => setViewMode('board')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
                 viewMode === 'board'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-zinc-500'
+                  : 'text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white'
               }`}
             >
-              🗂️ 섹션 보드
+              <Icon name="board" size={13} />
+              <span>섹션 보드</span>
             </button>
             <button
               type="button"
               onClick={() => setViewMode('grid')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
                 viewMode === 'grid'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-zinc-500'
+                  : 'text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white'
               }`}
             >
-              📋 카드 그리드
+              <Icon name="grid" size={13} />
+              <span>카드 그리드</span>
             </button>
             <button
               type="button"
               onClick={() => setViewMode('checklist')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
                 viewMode === 'checklist'
                   ? 'bg-surface-light dark:bg-surface-dark text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-zinc-500'
+                  : 'text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white'
               }`}
             >
-              ☑️ 체크리스트
+              <Icon name="checkSquare" size={13} />
+              <span>체크리스트</span>
             </button>
           </div>
 
@@ -2081,21 +2774,26 @@ export function SharedSpacePanel({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-2.5 py-1.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-700 dark:text-zinc-200 outline-none shrink-0"
+              className="px-2.5 py-1.5 rounded-xl bg-canvas-light dark:bg-zinc-900 border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none shrink-0"
             >
               <option value="all">상태: 전체</option>
-              <option value="중요">🔥 중요</option>
-              <option value="검토필요">🧐 검토필요</option>
-              <option value="확정">✅ 확정</option>
-              <option value="질문">❓ 질문</option>
+              <option value="중요">중요</option>
+              <option value="검토필요">검토필요</option>
+              <option value="확정">확정</option>
+              <option value="질문">질문</option>
             </select>
-            <input
-              type="search"
-              value={roomSearch}
-              onChange={(e) => setRoomSearch(e.target.value)}
-              placeholder="공유 노트 제목, 본문, 작성자 검색..."
-              className="flex-1 min-w-0 px-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
-            />
+            <div className="relative flex-1 min-w-0">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none">
+                <Icon name="search" size={13} />
+              </span>
+              <input
+                type="search"
+                value={roomSearch}
+                onChange={(e) => setRoomSearch(e.target.value)}
+                placeholder="공유 노트 제목, 본문, 작성자 검색..."
+                className="w-full min-w-0 pl-8 pr-3 py-1.5 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-normal text-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-blue-500"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -2176,41 +2874,95 @@ export function SharedSpacePanel({
         </div>
       )}
 
-      {/* 4. 메인 영역: 좌측 공유 노트 보드 + 우측 실시간 그룹 채팅 */}
-      <div className="flex flex-col xl:flex-row gap-4 items-stretch xl:items-start min-w-0">
+      {/* 4. 메인 영역: 좌측 공유 노트 보드 + 크기 조절 핸들 + 우측 실시간 그룹 채팅 */}
+      <div className="flex flex-col xl:flex-row gap-4 xl:gap-0 items-stretch xl:items-start min-w-0">
         {/* 좌측 공유 노트 영역 */}
-        <div className="flex-1 min-w-0 w-full">
-          {/* (A) 섹션 칸반 보드 뷰 */}
+        <div className="flex-1 min-w-0 w-full xl:pr-2">
+          {/* (A) 섹션 칸반 보드 뷰 (섹션 컬럼 드래그 + 노트 카드 드래그/순서 이동 지원) */}
           {viewMode === 'board' && (
-            <div className="flex gap-3.5 overflow-x-auto pb-3 items-start">
-              {(activeRoom.sections || []).map((section) => {
+            <div className="flex gap-4 overflow-x-auto pb-3 items-start">
+              {(activeRoom.sections || []).map((section, secIdx) => {
                 const sectionNotes = filteredRoomNotes.filter(
                   (n) => (n.sectionId || 'idea') === section.id
                 );
                 const topBorder = SECTION_ACCENT_STYLES[section.color] || 'border-t-blue-500';
-                const isDragOver = dragOverSectionId === section.id;
+                const isDragOverCol = dragOverSectionId === section.id;
+                const isHeaderDragOver = dragOverHeaderSectionId === section.id;
+                const isDraggingThisSec = draggedSectionId === section.id;
 
                 return (
                   <div
                     key={section.id}
                     onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragOverSectionId(section.id);
+                      if (draggedSectionId && draggedSectionId !== section.id && isHost) {
+                        e.preventDefault();
+                        setDragOverHeaderSectionId(section.id);
+                        return;
+                      }
+                      if (draggedNoteId) {
+                        e.preventDefault();
+                        setDragOverSectionId(section.id);
+                      }
                     }}
-                    onDragLeave={() => setDragOverSectionId(null)}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget)) {
+                        setDragOverSectionId((prev) => (prev === section.id ? null : prev));
+                        setDragOverHeaderSectionId((prev) => (prev === section.id ? null : prev));
+                      }
+                    }}
                     onDrop={(e) => {
                       e.preventDefault();
                       setDragOverSectionId(null);
+                      setDragOverHeaderSectionId(null);
+                      if (draggedSectionId && draggedSectionId !== section.id && isHost) {
+                        const fromIdx = (activeRoom.sections || []).findIndex(
+                          (s) => s.id === draggedSectionId
+                        );
+                        handleReorderSections({
+                          sectionId: draggedSectionId,
+                          targetSectionId: section.id,
+                          position: fromIdx < secIdx ? 'after' : 'before'
+                        });
+                        setDraggedSectionId(null);
+                        return;
+                      }
                       if (draggedNoteId) {
-                        handleMoveNotes([draggedNoteId], { sectionId: section.id });
+                        handleReorderNote({
+                          noteId: draggedNoteId,
+                          targetSectionId: section.id,
+                          position: 'end'
+                        });
                         setDraggedNoteId(null);
+                        setDropTargetNote(null);
                       }
                     }}
-                    className={`w-[272px] sm:w-[292px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark border-t-4 ${topBorder} p-3.5 flex flex-col gap-3 transition-colors ${
-                      isDragOver ? 'ring-2 ring-blue-500 bg-blue-500/5' : ''
+                    className={`w-[280px] sm:w-[304px] shrink-0 bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark border-t-4 ${topBorder} p-3.5 flex flex-col gap-3 transition-all ${
+                      isDraggingThisSec
+                        ? 'opacity-60 scale-[0.98]'
+                        : isHeaderDragOver
+                        ? 'ring-2 ring-blue-600 bg-blue-500/5'
+                        : isDragOverCol
+                        ? 'ring-2 ring-blue-500/80 bg-blue-500/5'
+                        : ''
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div
+                      draggable={isHost && editingSectionId !== section.id}
+                      onDragStart={(e) => {
+                        if (!isHost || editingSectionId === section.id) return;
+                        e.stopPropagation();
+                        setDraggedSectionId(section.id);
+                        if (e.dataTransfer) {
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', `sec:${section.id}`);
+                        }
+                      }}
+                      onDragEnd={() => {
+                        setDraggedSectionId(null);
+                        setDragOverHeaderSectionId(null);
+                      }}
+                      className="flex items-center justify-between gap-2"
+                    >
                       {editingSectionId === section.id ? (
                         <form onSubmit={handleRenameSection} className="flex items-center gap-1 flex-1 min-w-0">
                           <input
@@ -2218,33 +2970,76 @@ export function SharedSpacePanel({
                             value={editingSectionTitle}
                             onChange={(e) => setEditingSectionTitle(e.target.value)}
                             autoFocus
-                            className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-normal text-zinc-900 dark:text-white outline-none"
+                            className="flex-1 min-w-0 px-2 py-1 rounded-lg bg-canvas-light dark:bg-canvas-dark border border-blue-500 text-xs font-normal text-zinc-900 dark:text-white outline-none"
                           />
                           <button
                             type="submit"
-                            className="text-[11px] font-bold text-blue-600 px-1.5 py-0.5"
+                            className="text-xs font-bold text-blue-600 px-1.5 py-0.5 cursor-pointer"
                           >
                             저장
                           </button>
                           <button
                             type="button"
                             onClick={() => setEditingSectionId(null)}
-                            className="text-[11px] text-zinc-400 px-1"
+                            className="p-1 text-zinc-500 hover:text-zinc-700 cursor-pointer"
+                            aria-label="섹션 이름 변경 취소"
                           >
-                            ✕
+                            <Icon name="close" size={12} />
                           </button>
                         </form>
                       ) : (
                         <>
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <h3 className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                            {isHost && (
+                              <span
+                                className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-grab active:cursor-grabbing shrink-0"
+                                title="끌어서 섹션 컬럼 순서 변경"
+                              >
+                                <Icon name="grip" size={13} />
+                              </span>
+                            )}
+                            <h3 className="text-[13px] font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
                               {section.title}
                             </h3>
-                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300 shrink-0">
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-700 dark:text-zinc-200 shrink-0">
                               {sectionNotes.length}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1 shrink-0">
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            {isHost && (activeRoom.sections || []).length > 1 && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={secIdx === 0}
+                                  onClick={() =>
+                                    handleReorderSections({
+                                      sectionId: section.id,
+                                      direction: 'left'
+                                    })
+                                  }
+                                  className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 disabled:opacity-25 cursor-pointer"
+                                  title="섹션 왼쪽으로 이동"
+                                  aria-label="섹션 왼쪽으로 이동"
+                                >
+                                  <Icon name="left" size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={secIdx === (activeRoom.sections || []).length - 1}
+                                  onClick={() =>
+                                    handleReorderSections({
+                                      sectionId: section.id,
+                                      direction: 'right'
+                                    })
+                                  }
+                                  className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 disabled:opacity-25 cursor-pointer"
+                                  title="섹션 오른쪽으로 이동"
+                                  aria-label="섹션 오른쪽으로 이동"
+                                >
+                                  <Icon name="right" size={12} />
+                                </button>
+                              </>
+                            )}
                             {isHost && (
                               <>
                                 <button
@@ -2253,19 +3048,21 @@ export function SharedSpacePanel({
                                     setEditingSectionId(section.id);
                                     setEditingSectionTitle(section.title);
                                   }}
-                                  className="text-[11px] text-zinc-400 hover:text-blue-500 px-1"
+                                  className="p-1 rounded-md text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
                                   title="섹션 이름 변경"
+                                  aria-label="섹션 이름 변경"
                                 >
-                                  ✏️
+                                  <Icon name="edit" size={12} />
                                 </button>
                                 {(activeRoom.sections || []).length > 1 && (
                                   <button
                                     type="button"
                                     onClick={() => handleDeleteSection(section)}
-                                    className="text-[11px] text-zinc-400 hover:text-red-500 px-1"
+                                    className="p-1 rounded-md text-zinc-400 hover:text-red-500 cursor-pointer"
                                     title="섹션 삭제"
+                                    aria-label="섹션 삭제"
                                   >
-                                    🗑️
+                                    <Icon name="trash" size={12} />
                                   </button>
                                 )}
                               </>
@@ -2273,10 +3070,11 @@ export function SharedSpacePanel({
                             <button
                               type="button"
                               onClick={() => openCreateNoteModal(section.id)}
-                              className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-0.5 rounded-lg"
+                              className="ml-0.5 text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-1 rounded-lg inline-flex items-center gap-1 cursor-pointer"
                               title="이 섹션에 노트 추가"
                             >
-                              + 추가
+                              <Icon name="plus" size={12} />
+                              <span>추가</span>
                             </button>
                           </div>
                         </>
@@ -2285,15 +3083,24 @@ export function SharedSpacePanel({
 
                     <div className="flex flex-col gap-2.5 min-h-[120px]">
                       {sectionNotes.length === 0 ? (
-                        <div className="py-8 text-center text-[11px] text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl">
-                          노트를 끌어다 놓거나 [+ 추가]를 누르세요
+                        <div className="py-10 px-3 text-center text-xs text-zinc-500 dark:text-zinc-400 border border-dashed border-line-light dark:border-line-dark rounded-xl leading-relaxed">
+                          노트 카드를 끌어다 놓거나
+                          <br />
+                          상단 [+ 추가] 버튼으로 생성하세요
                         </div>
                       ) : (
-                        sectionNotes.map((note) => (
+                        sectionNotes.map((note, noteIdx) => (
                           <SharedNoteCard
                             key={note.id}
                             note={note}
                             isSelected={selectedNoteIds.includes(note.id)}
+                            isDragging={draggedNoteId === note.id}
+                            dropPosition={
+                              dropTargetNote?.noteId === note.id ? dropTargetNote.position : null
+                            }
+                            canMoveUp={noteIdx > 0}
+                            canMoveDown={noteIdx < sectionNotes.length - 1}
+                            sections={activeRoom.sections || []}
                             onToggleSelect={() =>
                               setSelectedNoteIds((prev) =>
                                 prev.includes(note.id)
@@ -2301,7 +3108,72 @@ export function SharedSpacePanel({
                                   : [...prev, note.id]
                               )
                             }
-                            onDragStart={() => setDraggedNoteId(note.id)}
+                            onDragStart={(e) => {
+                              e.stopPropagation();
+                              setDraggedNoteId(note.id);
+                              if (e.dataTransfer) {
+                                e.dataTransfer.effectAllowed = 'move';
+                                e.dataTransfer.setData('text/plain', note.id);
+                              }
+                            }}
+                            onDragEnd={() => {
+                              setDraggedNoteId(null);
+                              setDropTargetNote(null);
+                              setDragOverSectionId(null);
+                            }}
+                            onDragOverCard={(e) => {
+                              if (!draggedNoteId || draggedNoteId === note.id) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const pos = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+                              setDragOverSectionId(section.id);
+                              setDropTargetNote((prev) =>
+                                prev?.noteId === note.id && prev?.position === pos
+                                  ? prev
+                                  : { noteId: note.id, position: pos }
+                              );
+                            }}
+                            onDropOnCard={(e) => {
+                              if (!draggedNoteId) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const pos =
+                                dropTargetNote?.noteId === note.id
+                                  ? dropTargetNote.position
+                                  : 'before';
+                              if (draggedNoteId !== note.id) {
+                                handleReorderNote({
+                                  noteId: draggedNoteId,
+                                  targetSectionId: section.id,
+                                  targetNoteId: note.id,
+                                  position: pos
+                                });
+                              }
+                              setDraggedNoteId(null);
+                              setDropTargetNote(null);
+                              setDragOverSectionId(null);
+                            }}
+                            onMoveStep={(dir) => {
+                              const neighbor =
+                                dir === 'up'
+                                  ? sectionNotes[noteIdx - 1]
+                                  : sectionNotes[noteIdx + 1];
+                              if (!neighbor) return;
+                              handleReorderNote({
+                                noteId: note.id,
+                                targetSectionId: section.id,
+                                targetNoteId: neighbor.id,
+                                direction: dir
+                              });
+                            }}
+                            onMoveToSection={(targetSecId) =>
+                              handleReorderNote({
+                                noteId: note.id,
+                                targetSectionId: targetSecId,
+                                position: 'end'
+                              })
+                            }
                             onView={() => setViewingSharedNote(note)}
                             onEdit={() => openEditNoteModal(note)}
                             onDelete={() => handleDeleteSharedNote(note.id)}
@@ -2325,7 +3197,7 @@ export function SharedSpacePanel({
               })}
 
               {/* 새 섹션 컬럼 추가 */}
-              <div className="w-[240px] shrink-0">
+              <div className="w-[244px] shrink-0">
                 {showNewSectionInput ? (
                   <form
                     onSubmit={handleAddSection}
@@ -2335,15 +3207,15 @@ export function SharedSpacePanel({
                       type="text"
                       value={newSectionTitle}
                       onChange={(e) => setNewSectionTitle(e.target.value)}
-                      placeholder="예: 🧪 테스트 대기"
+                      placeholder="예: 테스트 대기"
                       autoFocus
-                      className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-semibold text-zinc-900 dark:text-white outline-none"
+                      className="px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-normal text-zinc-900 dark:text-white outline-none focus:border-blue-500"
                     />
                     <div className="flex justify-end gap-1.5">
                       <button
                         type="button"
                         onClick={() => setShowNewSectionInput(false)}
-                        className="px-2.5 py-1 text-xs text-zinc-400"
+                        className="px-2.5 py-1 text-xs text-zinc-500 hover:text-zinc-700"
                       >
                         취소
                       </button>
@@ -2359,28 +3231,36 @@ export function SharedSpacePanel({
                   <button
                     type="button"
                     onClick={() => setShowNewSectionInput(true)}
-                    className="w-full py-3.5 px-4 rounded-2xl border border-dashed border-line-light dark:border-line-dark text-xs font-bold text-zinc-500 hover:text-blue-600 hover:border-blue-500/50 transition-colors"
+                    className="w-full py-3.5 px-4 rounded-2xl border border-dashed border-line-light dark:border-line-dark text-xs font-bold text-zinc-600 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-500/50 inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                   >
-                    + 새 보드 섹션(컬럼) 추가
+                    <Icon name="plus" size={14} />
+                    <span>새 보드 섹션 추가</span>
                   </button>
                 )}
               </div>
             </div>
           )}
 
-          {/* (B) 카드 그리드 뷰 */}
+          {/* (B) 카드 그리드 뷰 (카드 드래그/화살표 순서 재정렬 지원) */}
           {viewMode === 'grid' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+            <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-3.5">
               {filteredRoomNotes.length === 0 ? (
-                <div className="col-span-full bg-surface-light dark:bg-surface-dark p-10 rounded-2xl border border-line-light dark:border-line-dark text-center text-xs text-zinc-400">
+                <div className="col-span-full bg-surface-light dark:bg-surface-dark p-10 rounded-2xl border border-line-light dark:border-line-dark text-center text-xs text-zinc-500 dark:text-zinc-400">
                   조건에 맞는 공유 노트가 없습니다.
                 </div>
               ) : (
-                filteredRoomNotes.map((note) => (
+                filteredRoomNotes.map((note, noteIdx) => (
                   <SharedNoteCard
                     key={note.id}
                     note={note}
                     isSelected={selectedNoteIds.includes(note.id)}
+                    isDragging={draggedNoteId === note.id}
+                    dropPosition={
+                      dropTargetNote?.noteId === note.id ? dropTargetNote.position : null
+                    }
+                    canMoveUp={noteIdx > 0}
+                    canMoveDown={noteIdx < filteredRoomNotes.length - 1}
+                    sections={activeRoom.sections || []}
                     onToggleSelect={() =>
                       setSelectedNoteIds((prev) =>
                         prev.includes(note.id)
@@ -2388,7 +3268,59 @@ export function SharedSpacePanel({
                           : [...prev, note.id]
                       )
                     }
-                    onDragStart={() => setDraggedNoteId(note.id)}
+                    onDragStart={(e) => {
+                      setDraggedNoteId(note.id);
+                      if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', note.id);
+                      }
+                    }}
+                    onDragEnd={() => {
+                      setDraggedNoteId(null);
+                      setDropTargetNote(null);
+                    }}
+                    onDragOverCard={(e) => {
+                      if (!draggedNoteId || draggedNoteId === note.id) return;
+                      e.preventDefault();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const pos = e.clientX - rect.left < rect.width / 2 ? 'before' : 'after';
+                      setDropTargetNote((prev) =>
+                        prev?.noteId === note.id && prev?.position === pos
+                          ? prev
+                          : { noteId: note.id, position: pos }
+                      );
+                    }}
+                    onDropOnCard={(e) => {
+                      if (!draggedNoteId || draggedNoteId === note.id) return;
+                      e.preventDefault();
+                      const pos =
+                        dropTargetNote?.noteId === note.id ? dropTargetNote.position : 'before';
+                      handleReorderNote({
+                        noteId: draggedNoteId,
+                        targetSectionId: note.sectionId || 'idea',
+                        targetNoteId: note.id,
+                        position: pos
+                      });
+                      setDraggedNoteId(null);
+                      setDropTargetNote(null);
+                    }}
+                    onMoveStep={(dir) => {
+                      const neighbor =
+                        dir === 'up' ? filteredRoomNotes[noteIdx - 1] : filteredRoomNotes[noteIdx + 1];
+                      if (!neighbor) return;
+                      handleReorderNote({
+                        noteId: note.id,
+                        targetNoteId: neighbor.id,
+                        direction: dir
+                      });
+                    }}
+                    onMoveToSection={(targetSecId) =>
+                      handleReorderNote({
+                        noteId: note.id,
+                        targetSectionId: targetSecId,
+                        position: 'end'
+                      })
+                    }
                     onView={() => setViewingSharedNote(note)}
                     onEdit={() => openEditNoteModal(note)}
                     onDelete={() => handleDeleteSharedNote(note.id)}
@@ -2412,17 +3344,18 @@ export function SharedSpacePanel({
           {/* (C) 체크리스트 모아보기 뷰 */}
           {viewMode === 'checklist' && (
             <div className="bg-surface-light dark:bg-surface-dark p-5 rounded-2xl border border-line-light dark:border-line-dark flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
-                  ☑️ 방 전체 공동 체크리스트 모아보기
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 inline-flex items-center gap-2">
+                  <Icon name="checkSquare" size={16} className="text-blue-600 dark:text-blue-400" />
+                  <span>방 전체 공동 체크리스트 모아보기</span>
                 </h3>
-                <span className="text-xs text-zinc-400">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
                   클릭하면 모든 참여자 화면에 실시간으로 완료 표시됩니다
                 </span>
               </div>
               {filteredRoomNotes.filter((n) => (n.checklist || []).length > 0).length === 0 ? (
-                <div className="py-8 text-center text-xs text-zinc-400">
-                  체크리스트가 포함된 공유 노트가 없습니다. 노트 작성 시 할 일 항목을 추가해 보세요!
+                <div className="py-8 text-center text-xs text-zinc-500 dark:text-zinc-400">
+                  체크리스트가 포함된 공유 노트가 없습니다. 노트 작성 시 할 일 항목을 추가해 보세요.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -2439,7 +3372,7 @@ export function SharedSpacePanel({
                             <button
                               type="button"
                               onClick={() => setViewingSharedNote(note)}
-                              className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 hover:text-blue-600 text-left truncate"
+                              className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 hover:text-blue-600 text-left truncate cursor-pointer"
                             >
                               {note.title}
                             </button>
@@ -2480,134 +3413,516 @@ export function SharedSpacePanel({
           )}
         </div>
 
-        {/* 우측 도킹형 실시간 그룹 채팅 패널 (뷰포트 높이에 맞춰 자동 조절 + sticky 고정으로 입력창 잘림 방지) */}
+        {/* 데스크톱 분할 너비 드래그 핸들 */}
         {chatOpen && (
-          <aside className="w-full xl:w-[340px] 2xl:w-[370px] shrink-0 min-w-0 overflow-hidden bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col h-[460px] xl:h-[clamp(400px,calc(100vh-250px),680px)] xl:sticky xl:top-10">
-            {/* 채팅 헤더 */}
-            <div className="shrink-0 px-4 py-2.5 border-b border-line-light dark:border-line-dark flex items-center justify-between gap-2">
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="메신저 창 너비 조절"
+            title="끌어서 채팅창 너비 조절 (더블클릭 시 기본 크기)"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setIsResizingSplit(true);
+            }}
+            onDoubleClick={() => setChatPanelWidth(360)}
+            className="hidden xl:flex w-3 shrink-0 cursor-col-resize items-center justify-center group select-none self-stretch py-6"
+          >
+            <span
+              className={`w-1 h-16 rounded-full transition-colors ${
+                isResizingSplit
+                  ? 'bg-blue-600'
+                  : 'bg-line-light dark:bg-line-dark group-hover:bg-blue-500'
+              }`}
+            />
+          </div>
+        )}
+
+        {/* 우측 도킹형 실시간 메신저 패널 (드래그 너비 조절 + 파일/GIF 첨부 + 답장 + 이모지 반응) */}
+        {chatOpen && (
+          <aside
+            style={{ '--chat-w': `${chatPanelWidth}px` }}
+            onDragOver={(e) => {
+              if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+                e.preventDefault();
+                setChatDragActive(true);
+              }
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget)) {
+                setChatDragActive(false);
+              }
+            }}
+            onDrop={handleChatDrop}
+            className="relative w-full xl:w-[var(--chat-w)] shrink-0 min-w-0 overflow-hidden bg-surface-light dark:bg-surface-dark rounded-2xl border border-line-light dark:border-line-dark shadow-sm flex flex-col h-[520px] xl:h-[clamp(440px,calc(100vh-225px),740px)] xl:sticky xl:top-6"
+          >
+            {/* 파일 / GIF 드롭 오버레이 */}
+            {chatDragActive && (
+              <div className="absolute inset-0 z-30 bg-blue-600/15 backdrop-blur-[2px] border-2 border-dashed border-blue-500 rounded-2xl flex flex-col items-center justify-center gap-2 p-6 text-center pointer-events-none">
+                <div className="w-11 h-11 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-md">
+                  <Icon name="paperclip" size={20} />
+                </div>
+                <p className="text-sm font-extrabold text-blue-700 dark:text-blue-300">
+                  파일·이미지·GIF를 여기에 놓으세요
+                </p>
+                <p className="text-xs text-zinc-700 dark:text-zinc-200">
+                  메시지당 최대 4개, 파일당 최대 3MB까지 첨부됩니다
+                </p>
+              </div>
+            )}
+
+            {/* 메신저 헤더 */}
+            <div className="shrink-0 px-4 py-3 border-b border-line-light dark:border-line-dark flex items-center justify-between gap-2 bg-surface-light dark:bg-surface-dark">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
-                  💬 그룹 실시간 채팅
-                </span>
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    activeRoom.relayConnected ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-[13px] font-extrabold text-zinc-900 dark:text-zinc-100 truncate">
+                    그룹 메신저
+                  </div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    {activeRoom.relayConnected ? '실시간 온라인' : '로컬 네트워크'} · 답장·GIF·파일 첨부
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[10px] text-zinc-400 whitespace-nowrap">
-                  📌 눌러 노트화
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setChatOpen(false)}
-                  className="w-6 h-6 rounded-lg text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-muted-light dark:hover:bg-muted-dark grid place-items-center transition-colors"
-                  title="채팅창 접기"
-                >
-                  ✕
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setChatOpen(false)}
+                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-100 hover:bg-muted-light dark:hover:bg-muted-dark transition-colors cursor-pointer shrink-0"
+                title="메신저 창 접기"
+                aria-label="메신저 창 접기"
+              >
+                <Icon name="close" size={14} />
+              </button>
             </div>
 
             {/* 채팅 메시지 목록 */}
-            <div className="flex-1 min-h-0 overflow-y-auto p-3.5 flex flex-col gap-3">
+            <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3 flex flex-col gap-2.5">
               {(activeRoom.messages || []).length === 0 ? (
-                <div className="my-auto py-8 text-center text-xs text-zinc-400">
-                  첫 메시지를 보내 팀원과 대화를 시작해 보세요.
+                <div className="my-auto py-10 px-4 text-center flex flex-col items-center gap-2">
+                  <div className="w-10 h-10 rounded-xl bg-muted-light dark:bg-muted-dark text-zinc-500 flex items-center justify-center">
+                    <Icon name="message" size={18} />
+                  </div>
+                  <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    첫 메시지를 보내 팀원과 대화를 시작해 보세요.
+                  </p>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    파일·GIF를 끌어다 놓거나 Ctrl+V로 이미지를 바로 보낼 수 있습니다.
+                  </p>
                 </div>
               ) : (
-                (activeRoom.messages || []).map((msg) => {
+                (activeRoom.messages || []).map((msg, msgIndex, msgArr) => {
+                  const prevMsg = msgIndex > 0 ? msgArr[msgIndex - 1] : null;
+                  const currDateKey = new Date(msg.createdAt || Date.now()).toLocaleDateString('ko-KR', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                  });
+                  const prevDateKey = prevMsg
+                    ? new Date(prevMsg.createdAt || Date.now()).toLocaleDateString('ko-KR', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                      })
+                    : null;
+                  const showDateDivider = currDateKey !== prevDateKey;
+
                   if (msg.isSystem) {
                     return (
-                      <div key={msg.id} className="text-center my-0.5">
-                        <span className="inline-block max-w-full break-words text-[11px] px-2.5 py-1 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400">
-                          {msg.text}
-                        </span>
+                      <div key={msg.id} className="flex flex-col gap-2 my-0.5">
+                        {showDateDivider && (
+                          <div className="flex items-center justify-center my-1">
+                            <span className="text-[11px] font-semibold px-3 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300">
+                              {currDateKey}
+                            </span>
+                          </div>
+                        )}
+                        <div className="text-center">
+                          <span className="inline-block max-w-full break-words text-[11px] px-3 py-1 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300">
+                            {msg.text}
+                          </span>
+                        </div>
                       </div>
                     );
                   }
 
                   const isMine = msg.author?.uid === currentAccount.uid;
+                  const isGrouped =
+                    !showDateDivider &&
+                    prevMsg &&
+                    !prevMsg.isSystem &&
+                    prevMsg.author?.uid === msg.author?.uid &&
+                    Math.abs((msg.createdAt || 0) - (prevMsg.createdAt || 0)) < 3 * 60 * 1000;
                   const timeStr = new Date(msg.createdAt || Date.now()).toLocaleTimeString('ko-KR', {
                     hour: '2-digit',
                     minute: '2-digit'
                   });
 
+                  const msgAttachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+                  const hasLegacyStandaloneImage =
+                    Boolean(msg.imageDataUrl) &&
+                    !msgAttachments.some((a) => a.dataUrl === msg.imageDataUrl);
+                  const reactionEntries = Object.entries(msg.reactions || {}).filter(
+                    ([, uids]) => Array.isArray(uids) && uids.length > 0
+                  );
+
                   return (
-                    <div
-                      key={msg.id}
-                      className={`group flex gap-2 min-w-0 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}
-                    >
-                      <UserAvatar user={msg.author} size="sm" />
-                      <div
-                        className={`min-w-0 max-w-[82%] flex flex-col ${
-                          isMine ? 'items-end' : 'items-start'
-                        }`}
-                      >
-                        <div className="flex items-center gap-1.5 mb-1 max-w-full">
-                          <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300 truncate">
-                            {msg.author?.name}
+                    <div key={msg.id} className="flex flex-col gap-1.5">
+                      {showDateDivider && (
+                        <div className="flex items-center justify-center my-1.5">
+                          <span className="text-[11px] font-semibold px-3 py-0.5 rounded-full bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300">
+                            {currDateKey}
                           </span>
-                          <span className="text-[10px] text-zinc-400 shrink-0">{timeStr}</span>
+                        </div>
+                      )}
+
+                      <div
+                        className={`group flex gap-2 min-w-0 ${
+                          isMine ? 'flex-row-reverse' : 'flex-row'
+                        } ${isGrouped ? '-mt-1' : 'mt-1'}`}
+                      >
+                        <div className="w-7 shrink-0">
+                          {!isGrouped && <UserAvatar user={msg.author} size="sm" />}
                         </div>
 
                         <div
-                          className={`max-w-full px-3 py-2.5 rounded-2xl text-xs leading-relaxed break-words [overflow-wrap:anywhere] overflow-hidden ${
-                            isMine
-                              ? 'bg-blue-600 text-white rounded-tr-sm'
-                              : 'bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-zinc-100 border border-line-light dark:border-line-dark rounded-tl-sm'
+                          className={`min-w-0 max-w-[84%] flex flex-col ${
+                            isMine ? 'items-end' : 'items-start'
                           }`}
                         >
-                          {msg.text && <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{msg.text}</div>}
-                          {msg.imageDataUrl && (
-                            <img
-                              src={msg.imageDataUrl}
-                              alt="채팅 이미지"
-                              className="mt-2 rounded-lg max-h-44 max-w-full object-contain bg-black/10"
-                            />
+                          {!isGrouped && (
+                            <div
+                              className={`flex items-center gap-1.5 mb-1 max-w-full ${
+                                isMine ? 'flex-row-reverse' : 'flex-row'
+                              }`}
+                            >
+                              <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 truncate">
+                                {msg.author?.name}
+                              </span>
+                              <span className="text-[11px] text-zinc-500 dark:text-zinc-400 shrink-0">
+                                {timeStr}
+                              </span>
+                            </div>
                           )}
-                          {msg.sharedNoteRef && (
+
+                          <div
+                            className={`max-w-full px-3.5 py-2.5 rounded-2xl text-[13px] leading-relaxed break-words [overflow-wrap:anywhere] overflow-hidden shadow-xs ${
+                              isMine
+                                ? 'bg-blue-600 text-white rounded-tr-sm'
+                                : 'bg-canvas-light dark:bg-canvas-dark text-zinc-900 dark:text-zinc-100 border border-line-light dark:border-line-dark rounded-tl-sm'
+                            }`}
+                          >
+                            {/* 답장/인용 블록 */}
+                            {msg.replyTo && (
+                              <div
+                                className={`mb-2 pl-2.5 pr-2 py-1.5 rounded-lg border-l-2 text-[11px] ${
+                                  isMine
+                                    ? 'bg-blue-700/70 border-white/70 text-blue-50'
+                                    : 'bg-surface-light dark:bg-surface-dark border-blue-500 text-zinc-600 dark:text-zinc-300'
+                                }`}
+                              >
+                                <div className="font-bold truncate">
+                                  ↳ {msg.replyTo.authorName}에게 답장
+                                </div>
+                                <div className="truncate opacity-90">
+                                  {msg.replyTo.text || msg.replyTo.preview}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* 본문 텍스트 */}
+                            {msg.text && (
+                              <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                                {msg.text}
+                              </div>
+                            )}
+
+                            {/* 레거시 단일 이미지 / GIF */}
+                            {hasLegacyStandaloneImage && (
+                              <div className="mt-2 relative group/media inline-block max-w-full">
+                                <img
+                                  src={msg.imageDataUrl}
+                                  alt="채팅 이미지"
+                                  onClick={() =>
+                                    setLightboxMedia({
+                                      src: msg.imageDataUrl,
+                                      name: msg.imageDataUrl.startsWith('data:image/gif')
+                                        ? 'image.gif'
+                                        : 'image.png',
+                                      isGif: msg.imageDataUrl.startsWith('data:image/gif')
+                                    })
+                                  }
+                                  className="rounded-xl max-h-52 max-w-full object-contain bg-black/10 cursor-zoom-in"
+                                />
+                                {msg.imageDataUrl.startsWith('data:image/gif') && (
+                                  <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/75 text-white text-[10px] font-extrabold tracking-wide">
+                                    GIF
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {/* 다중 첨부파일 (GIF / 이미지 / 일반 파일) */}
+                            {msgAttachments.length > 0 && (
+                              <div className="mt-2 flex flex-col gap-2 max-w-full">
+                                {msgAttachments.map((att) => {
+                                  const attMime = att.mime || att.mimeType || '';
+                                  const isGif =
+                                    Boolean(att.isGif) ||
+                                    att.kind === 'gif' ||
+                                    attMime === 'image/gif' ||
+                                    att.dataUrl?.startsWith('data:image/gif');
+                                  const isImgOrGif =
+                                    Boolean(att.isImage) ||
+                                    isGif ||
+                                    att.kind === 'image' ||
+                                    attMime.startsWith('image/');
+
+                                  if (isImgOrGif) {
+                                    return (
+                                      <div
+                                        key={att.id || att.name}
+                                        className="relative rounded-xl overflow-hidden border border-black/10 dark:border-white/10 bg-black/5"
+                                      >
+                                        <img
+                                          src={att.dataUrl}
+                                          alt={att.name}
+                                          onClick={() =>
+                                            setLightboxMedia({
+                                              src: att.dataUrl,
+                                              name: att.name,
+                                              isGif
+                                            })
+                                          }
+                                          className="max-h-56 w-full object-contain cursor-zoom-in"
+                                        />
+                                        {isGif && (
+                                          <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/75 text-white text-[10px] font-extrabold tracking-wide">
+                                            GIF
+                                          </span>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSaveAttachment(att)}
+                                          title="파일 저장"
+                                          className="absolute bottom-2 right-2 px-2 py-1 rounded-lg bg-black/70 hover:bg-black text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                                        >
+                                          <Icon name="download" size={12} />
+                                          <span>저장</span>
+                                        </button>
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div
+                                      key={att.id || att.name}
+                                      className={`p-2.5 rounded-xl border flex items-center justify-between gap-2.5 min-w-0 ${
+                                        isMine
+                                          ? 'bg-blue-700/75 border-white/20 text-white'
+                                          : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-900 dark:text-zinc-100'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                        <span
+                                          className={`px-2 py-1 rounded-lg text-[10px] font-extrabold tracking-wider shrink-0 ${
+                                            isMine
+                                              ? 'bg-white/20 text-white'
+                                              : 'bg-blue-600/15 text-blue-700 dark:text-blue-300'
+                                          }`}
+                                        >
+                                          {getFileExtensionBadge(att.name, attMime)}
+                                        </span>
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-bold truncate">{att.name}</div>
+                                          <div
+                                            className={`text-[11px] ${
+                                              isMine ? 'text-blue-100' : 'text-zinc-500 dark:text-zinc-400'
+                                            }`}
+                                          >
+                                            {formatFileSize(att.size)}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSaveAttachment(att)}
+                                        title="PC에 파일 저장"
+                                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors ${
+                                          isMine
+                                            ? 'bg-white text-blue-700 hover:bg-blue-50'
+                                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                                        }`}
+                                      >
+                                        <Icon name="download" size={12} />
+                                        <span>저장</span>
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* 공유 노트 링크 카드 */}
+                            {msg.sharedNoteRef && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const target = (activeRoom.notes || []).find(
+                                    (n) => n.id === msg.sharedNoteRef.id
+                                  );
+                                  if (target) {
+                                    setViewingSharedNote(target);
+                                  } else {
+                                    showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
+                                  }
+                                }}
+                                className={`mt-2 w-full min-w-0 max-w-full overflow-hidden p-2.5 rounded-xl text-left flex items-center justify-between gap-2 border cursor-pointer ${
+                                  isMine
+                                    ? 'bg-blue-700/80 border-white/25 text-white hover:bg-blue-700'
+                                    : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-900 dark:text-zinc-100 hover:border-blue-500/50'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <Icon name="note" size={14} className="shrink-0" />
+                                  <div className="min-w-0">
+                                    <div className="text-[11px] opacity-80">공유 노트 바로가기</div>
+                                    <div className="text-xs font-bold truncate">
+                                      {msg.sharedNoteRef.title}
+                                    </div>
+                                  </div>
+                                </div>
+                                <Icon name="right" size={13} className="shrink-0" />
+                              </button>
+                            )}
+                          </div>
+
+                          {/* 이모지 반응 배지 */}
+                          {reactionEntries.length > 0 && (
+                            <div
+                              className={`mt-1 flex flex-wrap gap-1 ${
+                                isMine ? 'justify-end' : 'justify-start'
+                              }`}
+                            >
+                              {reactionEntries.map(([emoji, uids]) => {
+                                const reactedByMe = uids.includes(currentAccount.uid);
+                                return (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    onClick={() => handleReactChat(msg.id, emoji)}
+                                    className={`px-2 py-0.5 rounded-full text-[11px] font-bold border inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                                      reactedByMe
+                                        ? 'bg-blue-600/15 border-blue-500/50 text-blue-700 dark:text-blue-300'
+                                        : 'bg-canvas-light dark:bg-canvas-dark border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-300 hover:border-blue-500/40'
+                                    }`}
+                                  >
+                                    <span>{emoji}</span>
+                                    <span>{uids.length}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* 말풍선 빠른 액션 바 (답장 / 반응 / 노트화 / 복사) */}
+                          <div
+                            className={`mt-1 flex items-center gap-2 flex-wrap ${
+                              isMine ? 'justify-end' : 'justify-start'
+                            }`}
+                          >
+                            {isGrouped && (
+                              <span className="text-[10px] text-zinc-400">{timeStr}</span>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
-                                const target = (activeRoom.notes || []).find(
-                                  (n) => n.id === msg.sharedNoteRef.id
-                                );
-                                if (target) {
-                                  setViewingSharedNote(target);
-                                } else {
-                                  showToast?.('해당 노트가 삭제되었거나 찾을 수 없습니다.', 'info');
-                                }
+                                const preview =
+                                  msg.text ||
+                                  (msg.attachments?.length
+                                    ? `첨부파일 ${msg.attachments.length}개`
+                                    : msg.imageDataUrl
+                                    ? '이미지'
+                                    : msg.sharedNoteRef?.title || '메시지');
+                                setChatReplyTarget({
+                                  id: msg.id,
+                                  authorName: msg.author?.name || '팀원',
+                                  text: preview,
+                                  preview
+                                });
+                                chatInputRef.current?.focus();
                               }}
-                              className={`mt-2 w-full min-w-0 max-w-full overflow-hidden p-2 rounded-xl text-left flex items-center justify-between gap-2 border ${
-                                isMine
-                                  ? 'bg-blue-700/80 border-white/20 text-white'
-                                  : 'bg-surface-light dark:bg-surface-dark border-line-light dark:border-line-dark text-zinc-800 dark:text-zinc-200'
-                              }`}
+                              className="opacity-80 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400 inline-flex items-center gap-0.5 cursor-pointer transition-opacity"
                             >
-                              <div className="flex-1 min-w-0">
-                                <div className="text-[10px] opacity-75">📄 공유 노트 바로가기</div>
-                                <div className="text-xs font-bold truncate">
-                                  {msg.sharedNoteRef.title}
-                                </div>
-                              </div>
-                              <span className="text-xs shrink-0">↗</span>
+                              <Icon name="reply" size={11} />
+                              <span>답장</span>
                             </button>
-                          )}
-                        </div>
 
-                        {/* 채팅 메시지 -> 공유 노트로 즉시 박제 버튼 */}
-                        <div className="mt-1 flex items-center gap-2">
-                          {msg.pinnedToNoteId ? (
-                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
-                              📌 공유 노트로 등록됨
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handlePromoteChatToNote(msg.id)}
-                              className="opacity-75 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline transition-opacity"
-                            >
-                              📌 노트로 박제
-                            </button>
-                          )}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setActiveReactionMsgId((prev) =>
+                                    prev === msg.id ? null : msg.id
+                                  )
+                                }
+                                className="opacity-80 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400 inline-flex items-center gap-0.5 cursor-pointer transition-opacity"
+                              >
+                                <Icon name="smile" size={11} />
+                                <span>반응</span>
+                              </button>
+                              {activeReactionMsgId === msg.id && (
+                                <div
+                                  className={`absolute bottom-full mb-1 z-30 bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark rounded-full shadow-lg px-2 py-1 flex items-center gap-1 ${
+                                    isMine ? 'right-0' : 'left-0'
+                                  }`}
+                                >
+                                  {CHAT_REACTIONS.map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => handleReactChat(msg.id, emoji)}
+                                      className="w-6 h-6 rounded-full hover:bg-muted-light dark:hover:bg-muted-dark text-sm grid place-items-center cursor-pointer"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {msg.pinnedToNoteId ? (
+                              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold inline-flex items-center gap-0.5">
+                                <Icon name="pin" size={11} />
+                                <span>노트 등록됨</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handlePromoteChatToNote(msg.id)}
+                                className="opacity-80 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-0.5 cursor-pointer transition-opacity"
+                              >
+                                <Icon name="pin" size={11} />
+                                <span>노트화</span>
+                              </button>
+                            )}
+
+                            {msg.text && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard?.writeText(msg.text);
+                                  showToast?.('메시지 텍스트를 복사했습니다.', 'success');
+                                }}
+                                className="opacity-80 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100 inline-flex items-center gap-0.5 cursor-pointer transition-opacity"
+                                title="텍스트 복사"
+                              >
+                                <Icon name="copy" size={11} />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -2617,23 +3932,24 @@ export function SharedSpacePanel({
               <div ref={chatEndRef} />
             </div>
 
-            {/* 인라인 노트 공유 선택 트레이 (클립/짤림 방지) */}
+            {/* 인라인 노트 공유 선택 트레이 */}
             {showChatNotePicker && (
-              <div className="shrink-0 max-h-44 overflow-y-auto px-3 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex flex-col gap-1">
+              <div className="shrink-0 max-h-44 overflow-y-auto px-3 py-2.5 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex flex-col gap-1.5">
                 <div className="flex items-center justify-between px-1 pb-1">
-                  <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
+                  <span className="text-xs font-bold text-zinc-700 dark:text-zinc-200">
                     채팅에 공유할 노트 선택
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowChatNotePicker(false)}
-                    className="text-xs text-zinc-400 hover:text-zinc-600 px-1"
+                    className="p-1 text-zinc-500 hover:text-zinc-700"
+                    aria-label="노트 선택 닫기"
                   >
-                    ✕
+                    <Icon name="close" size={13} />
                   </button>
                 </div>
                 {(activeRoom.notes || []).length === 0 ? (
-                  <div className="text-[11px] text-zinc-400 px-2 py-2 text-center">
+                  <div className="text-xs text-zinc-500 dark:text-zinc-400 px-2 py-2 text-center">
                     아직 방에 공유할 노트가 없습니다.
                   </div>
                 ) : (
@@ -2650,81 +3966,252 @@ export function SharedSpacePanel({
                         });
                         setShowChatNotePicker(false);
                       }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-left text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-left text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate inline-flex items-center gap-1.5 cursor-pointer"
                     >
-                      📄 {n.title}
+                      <Icon name="note" size={12} className="shrink-0 text-blue-600 dark:text-blue-400" />
+                      <span className="truncate">{n.title}</span>
                     </button>
                   ))
                 )}
               </div>
             )}
 
-            {/* 첨부 미리보기 (이미지 또는 노트 링크 카드) */}
-            {(chatImage || chatShareNoteRef) && (
+            {/* 빠른 이모지 선택 트레이 */}
+            {showChatEmojiPicker && (
+              <div className="shrink-0 px-3 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex flex-wrap gap-1.5">
+                {CHAT_QUICK_EMOJIS.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      setChatInput((prev) => `${prev}${emoji}`);
+                      chatInputRef.current?.focus();
+                    }}
+                    className="w-8 h-8 rounded-lg hover:bg-surface-light dark:hover:bg-surface-dark border border-transparent hover:border-line-light dark:hover:border-line-dark text-base grid place-items-center cursor-pointer transition-colors"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* 답장 대상 미리보기 */}
+            {chatReplyTarget && (
               <div className="shrink-0 px-3.5 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex items-center justify-between gap-2 min-w-0">
-                {chatImage && (
-                  <div className="flex items-center gap-2 min-w-0">
-                    <img src={chatImage} alt="첨부" className="w-8 h-8 rounded object-cover shrink-0" />
-                    <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 truncate">
-                      클립보드 이미지 첨부됨
-                    </span>
+                <div className="min-w-0 pl-2 border-l-2 border-blue-500">
+                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate">
+                    {chatReplyTarget.authorName}에게 답장 중
                   </div>
-                )}
-                {chatShareNoteRef && (
-                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate min-w-0">
-                    📄 노트 공유: {chatShareNoteRef.title}
+                  <div className="text-xs text-zinc-600 dark:text-zinc-300 truncate">
+                    {chatReplyTarget.preview}
                   </div>
-                )}
+                </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setChatImage('');
-                    setChatShareNoteRef(null);
-                  }}
-                  className="text-xs text-zinc-400 hover:text-red-500 shrink-0 px-1"
+                  onClick={() => setChatReplyTarget(null)}
+                  className="p-1 text-zinc-400 hover:text-red-500 shrink-0 cursor-pointer"
+                  aria-label="답장 취소"
                 >
-                  ✕
+                  <Icon name="close" size={13} />
                 </button>
               </div>
             )}
 
-            {/* 채팅 입력창 */}
+            {/* 첨부 대기 트레이 (다중 파일 / GIF / 이미지 + 노트 링크) */}
+            {(chatImage || chatAttachments.length > 0 || chatShareNoteRef) && (
+              <div className="shrink-0 px-3.5 py-2 bg-canvas-light dark:bg-canvas-dark border-t border-line-light dark:border-line-dark flex flex-col gap-2 min-w-0">
+                {(chatImage || chatAttachments.length > 0) && (
+                  <div className="flex flex-wrap gap-2">
+                    {chatImage && (
+                      <div className="relative flex items-center gap-2 px-2 py-1 rounded-xl bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark">
+                        <img
+                          src={chatImage}
+                          alt="첨부 이미지"
+                          className="w-8 h-8 rounded-lg object-cover shrink-0"
+                        />
+                        <span className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-200">
+                          이미지
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setChatImage('')}
+                          className="text-zinc-400 hover:text-red-500 p-0.5 cursor-pointer"
+                        >
+                          <Icon name="close" size={11} />
+                        </button>
+                      </div>
+                    )}
+
+                    {chatAttachments.map((att) => {
+                      const attMime = att.mime || att.mimeType || '';
+                      const isGif = Boolean(att.isGif) || att.kind === 'gif' || attMime === 'image/gif';
+                      const isMedia =
+                        Boolean(att.isImage) ||
+                        isGif ||
+                        att.kind === 'image' ||
+                        attMime.startsWith('image/');
+                      return (
+                        <div
+                          key={att.id}
+                          className="flex items-center gap-2 px-2 py-1 rounded-xl bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark max-w-full"
+                        >
+                          {isMedia ? (
+                            <img
+                              src={att.dataUrl}
+                              alt={att.name}
+                              className="w-8 h-8 rounded-lg object-cover shrink-0"
+                            />
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-600/15 text-blue-700 dark:text-blue-300 text-[10px] font-extrabold shrink-0">
+                              {getFileExtensionBadge(att.name, attMime)}
+                            </span>
+                          )}
+                          <div className="min-w-0 max-w-[125px]">
+                            <div className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100 truncate">
+                              {att.name}
+                            </div>
+                            <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                              {isGif ? 'GIF · ' : ''}
+                              {formatFileSize(att.size)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setChatAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                            }
+                            className="text-zinc-400 hover:text-red-500 p-0.5 shrink-0 cursor-pointer"
+                            title="첨부 취소"
+                          >
+                            <Icon name="close" size={11} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {chatShareNoteRef && (
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-blue-600/10 border border-blue-500/30 min-w-0">
+                    <div className="text-xs font-bold text-blue-700 dark:text-blue-300 truncate inline-flex items-center gap-1.5 min-w-0">
+                      <Icon name="note" size={13} className="shrink-0" />
+                      <span className="truncate">노트 공유: {chatShareNoteRef.title}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setChatShareNoteRef(null)}
+                      className="text-zinc-400 hover:text-red-500 p-0.5 shrink-0 cursor-pointer"
+                    >
+                      <Icon name="close" size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 숨겨진 HTML 파일 피커 (브라우저 / 폴백) */}
+            <input
+              ref={chatFileInputRef}
+              type="file"
+              multiple
+              onChange={(e) => handleChatFileInputChange(e, 'any')}
+              className="hidden"
+            />
+            <input
+              ref={chatGifInputRef}
+              type="file"
+              accept="image/gif,image/png,image/jpeg,image/webp"
+              multiple
+              onChange={(e) => handleChatFileInputChange(e, 'gif')}
+              className="hidden"
+            />
+
+            {/* 채팅 입력 폼 */}
             <form
               onSubmit={handleSendChat}
               className="shrink-0 p-3 border-t border-line-light dark:border-line-dark flex flex-col gap-2 bg-surface-light dark:bg-surface-dark"
             >
-              <div className="flex items-center justify-between gap-2 min-w-0">
-                <button
-                  type="button"
-                  onClick={() => setShowChatNotePicker((v) => !v)}
-                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold whitespace-nowrap transition-colors ${
-                    showChatNotePicker
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border-line-light dark:border-line-dark text-zinc-600 dark:text-zinc-300'
-                  }`}
-                  title="방 안의 노트 카드를 채팅에 공유"
-                >
-                  📄 노트 공유
-                </button>
-                <span className="text-[10px] text-zinc-400 truncate">
-                  Ctrl+V 이미지 전송
+              <div className="flex items-center justify-between gap-1.5 min-w-0 flex-wrap">
+                <div className="flex items-center gap-1 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handlePickChatFilesNative('any')}
+                    className="px-2 py-1 rounded-lg bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-[11px] font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                    title="파일, 문서, 이미지 첨부 (최대 3MB)"
+                  >
+                    <Icon name="paperclip" size={12} />
+                    <span>파일</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePickChatFilesNative('gif')}
+                    className="px-2 py-1 rounded-lg bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border border-line-light dark:border-line-dark text-[11px] font-bold text-zinc-700 dark:text-zinc-200 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                    title="움직이는 GIF / 이미지 첨부"
+                  >
+                    <Icon name="image" size={12} />
+                    <span>GIF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowChatEmojiPicker((v) => !v)}
+                    className={`px-2 py-1 rounded-lg border text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                      showChatEmojiPicker
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200'
+                    }`}
+                    title="빠른 이모지"
+                  >
+                    <Icon name="smile" size={12} />
+                    <span>이모지</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowChatNotePicker((v) => !v)}
+                    className={`px-2 py-1 rounded-lg border text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                      showChatNotePicker
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-canvas-light dark:bg-canvas-dark hover:bg-muted-light dark:hover:bg-muted-dark border-line-light dark:border-line-dark text-zinc-700 dark:text-zinc-200'
+                    }`}
+                    title="방 안의 노트 카드를 채팅에 공유"
+                  >
+                    <Icon name="note" size={12} />
+                    <span>노트</span>
+                  </button>
+                </div>
+                <span className="text-[10px] text-zinc-400 whitespace-nowrap">
+                  Enter 전송 · Shift+Enter 줄바꿈
                 </span>
               </div>
 
-              <div className="flex items-center gap-2 min-w-0">
-                <input
-                  type="text"
+              <div className="flex items-end gap-2 min-w-0">
+                <textarea
+                  ref={chatInputRef}
+                  rows={2}
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onPaste={handleChatPaste}
-                  placeholder="메시지 입력 (Enter 전송)..."
-                  className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-xs font-medium text-zinc-900 dark:text-white outline-none focus:border-blue-500"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent?.isComposing) {
+                      e.preventDefault();
+                      handleSendChat(e);
+                    }
+                  }}
+                  placeholder="메시지 입력... (Ctrl+V 이미지 · 파일 드래그)"
+                  className="flex-1 min-w-0 min-h-[42px] max-h-[120px] resize-none px-3 py-2 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-[13px] font-normal leading-relaxed text-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-blue-500"
                 />
                 <button
                   type="submit"
-                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0 transition-colors"
+                  disabled={
+                    chatSending ||
+                    (!chatInput.trim() &&
+                      !chatImage &&
+                      chatAttachments.length === 0 &&
+                      !chatShareNoteRef)
+                  }
+                  className="px-3.5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
                 >
-                  전송
+                  <Icon name="send" size={13} />
+                  <span>{chatSending ? '전송 중' : '전송'}</span>
                 </button>
               </div>
             </form>
@@ -3293,10 +4780,64 @@ export function SharedSpacePanel({
                   onClick={() => handleDeleteSavedRoom(activeRoom.roomId, activeRoom.roomName)}
                   className="w-full py-2.5 rounded-xl bg-red-500/10 hover:bg-red-600 text-red-600 dark:text-red-400 hover:text-white border border-red-500/30 text-xs font-bold transition-colors"
                 >
-                  🗑️ 이 공유 방 및 그룹 노트 영구 삭제
+                  이 공유 방 및 그룹 노트 영구 삭제
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          MODAL 6: 채팅 이미지 / 움직이는 GIF 라이트박스 확대 보기
+         ======================================================================== */}
+      {lightboxMedia && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setLightboxMedia(null)}
+        >
+          <div
+            className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-zinc-900/90 text-white border border-white/10">
+              <div className="flex items-center gap-2 min-w-0">
+                {lightboxMedia.isGif && (
+                  <span className="px-2 py-0.5 rounded bg-blue-600 text-[10px] font-extrabold shrink-0">
+                    GIF
+                  </span>
+                )}
+                <span className="text-xs font-bold truncate">{lightboxMedia.name || '이미지 미리보기'}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSaveAttachment({
+                      name: lightboxMedia.name || (lightboxMedia.isGif ? 'image.gif' : 'image.png'),
+                      dataUrl: lightboxMedia.src
+                    })
+                  }
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Icon name="download" size={13} />
+                  <span>파일 저장</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLightboxMedia(null)}
+                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                  aria-label="이미지 확대 닫기"
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              </div>
+            </div>
+            <img
+              src={lightboxMedia.src}
+              alt={lightboxMedia.name || '미리보기'}
+              className="max-h-[78vh] max-w-full rounded-2xl object-contain shadow-2xl bg-black/40"
+            />
           </div>
         </div>
       )}
@@ -3307,8 +4848,18 @@ export function SharedSpacePanel({
 function SharedNoteCard({
   note,
   isSelected,
+  isDragging,
+  dropPosition,
+  canMoveUp,
+  canMoveDown,
+  sections = [],
   onToggleSelect,
   onDragStart,
+  onDragEnd,
+  onDragOverCard,
+  onDropOnCard,
+  onMoveStep,
+  onMoveToSection,
   onView,
   onEdit,
   onDelete,
@@ -3319,75 +4870,139 @@ function SharedNoteCard({
   const plain = getPlainText(note.content || '');
   const checklist = note.checklist || [];
   const doneCount = checklist.filter((c) => c.done).length;
+  const isGifImage = Boolean(note.imageDataUrl && note.imageDataUrl.startsWith('data:image/gif'));
 
   return (
     <div
       draggable
       onDragStart={onDragStart}
-      className={`group bg-canvas-light dark:bg-canvas-dark rounded-xl border p-3.5 flex flex-col gap-2.5 transition-all hover:border-blue-500/40 ${
-        isSelected
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOverCard}
+      onDrop={onDropOnCard}
+      className={`relative group bg-canvas-light dark:bg-canvas-dark rounded-xl border p-3.5 flex flex-col gap-2.5 transition-all hover:border-blue-500/50 ${
+        isDragging
+          ? 'opacity-50 scale-[0.98] border-blue-500'
+          : isSelected
           ? 'ring-2 ring-blue-600 border-blue-600'
           : note.pinned
           ? 'border-l-4 border-l-blue-600 border-line-light dark:border-line-dark'
           : 'border-line-light dark:border-line-dark'
       }`}
     >
-      {/* 상단: 선택 체크박스 + 상태 배지 + 작성자 */}
+      {/* 드롭 삽입 위치 시각선 */}
+      {dropPosition === 'before' && (
+        <div className="absolute -top-1.5 left-2 right-2 h-1 rounded-full bg-blue-500 shadow-sm pointer-events-none" />
+      )}
+      {dropPosition === 'after' && (
+        <div className="absolute -bottom-1.5 left-2 right-2 h-1 rounded-full bg-blue-500 shadow-sm pointer-events-none" />
+      )}
+
+      {/* 상단: 드래그 손잡이 + 체크박스 + 상태 배지 + 위/아래 이동 + 작성자 */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-grab active:cursor-grabbing shrink-0"
+            title="끌어서 카드 순서 또는 섹션 이동"
+          >
+            <Icon name="grip" size={13} />
+          </span>
           <input
             type="checkbox"
             checked={isSelected}
             onChange={onToggleSelect}
-            className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer"
+            className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer shrink-0"
             title="병합/일괄 이동 선택"
           />
           {note.statusBadge && (
             <span
-              className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+              className={`text-[11px] font-bold px-1.5 py-0.5 rounded border whitespace-nowrap ${
                 STATUS_BADGE_STYLES[note.statusBadge] || ''
               }`}
             >
               {note.statusBadge}
             </span>
           )}
-          {note.pinned && <span className="text-[11px]">📌</span>}
+          {note.pinned && (
+            <span className="text-blue-600 dark:text-blue-400 shrink-0" title="상단 고정됨">
+              <Icon name="pin" size={12} />
+            </span>
+          )}
         </div>
+
         <div className="flex items-center gap-1.5 shrink-0">
+          {(canMoveUp || canMoveDown) && onMoveStep && (
+            <div className="flex items-center rounded-md border border-line-light dark:border-line-dark bg-surface-light dark:bg-surface-dark overflow-hidden opacity-85 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+              <button
+                type="button"
+                disabled={!canMoveUp}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveStep('up');
+                }}
+                title="위로 이동"
+                aria-label="노트 카드 위로 이동"
+                className="p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-25 cursor-pointer"
+              >
+                <Icon name="up" size={11} />
+              </button>
+              <button
+                type="button"
+                disabled={!canMoveDown}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveStep('down');
+                }}
+                title="아래로 이동"
+                aria-label="노트 카드 아래로 이동"
+                className="p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-25 border-l border-line-light dark:border-line-dark cursor-pointer"
+              >
+                <Icon name="down" size={11} />
+              </button>
+            </div>
+          )}
           <UserAvatar user={note.author} size="sm" />
-          <span className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 truncate max-w-[75px]">
+          <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 truncate max-w-[78px]">
             {note.author?.name}
           </span>
         </div>
       </div>
 
       {/* 제목 & 본문 요약 */}
-      <div onClick={onView} className="cursor-pointer flex flex-col gap-1 min-w-0">
-        <h4 className="text-xs sm:text-sm font-extrabold text-zinc-900 dark:text-zinc-100 line-clamp-2 break-words [overflow-wrap:anywhere]">
+      <div onClick={onView} className="cursor-pointer flex flex-col gap-1.5 min-w-0">
+        <h4 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100 line-clamp-2 leading-snug break-words [overflow-wrap:anywhere]">
           {note.title}
         </h4>
         {plain && (
-          <p className="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-3 leading-relaxed break-words [overflow-wrap:anywhere]">
+          <p className="text-[13px] text-zinc-600 dark:text-zinc-300 line-clamp-3 leading-relaxed break-words [overflow-wrap:anywhere]">
             {plain}
           </p>
         )}
       </div>
 
-      {/* 썸네일 이미지 */}
+      {/* 썸네일 이미지 / GIF */}
       {note.imageDataUrl && (
-        <img
-          src={note.imageDataUrl}
-          alt="첨부"
-          onClick={onView}
-          className="rounded-lg max-h-32 w-full object-cover cursor-pointer border border-line-light dark:border-line-dark"
-        />
+        <div className="relative cursor-pointer" onClick={onView}>
+          <img
+            src={note.imageDataUrl}
+            alt="첨부 이미지"
+            className="rounded-lg max-h-36 w-full object-cover border border-line-light dark:border-line-dark"
+          />
+          {isGifImage && (
+            <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/75 text-white text-[10px] font-extrabold">
+              GIF
+            </span>
+          )}
+        </div>
       )}
 
       {/* 미니 체크리스트 프리뷰 */}
       {checklist.length > 0 && (
-        <div className="p-2 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark flex flex-col gap-1">
-          <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
-            <span>☑️ 체크리스트</span>
+        <div className="p-2.5 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+            <span className="inline-flex items-center gap-1">
+              <Icon name="checkSquare" size={12} />
+              <span>체크리스트</span>
+            </span>
             <span>
               {doneCount}/{checklist.length}
             </span>
@@ -3395,17 +5010,17 @@ function SharedNoteCard({
           {checklist.slice(0, 3).map((item) => (
             <label
               key={item.id}
-              className="flex items-center gap-1.5 text-[11px] cursor-pointer select-none"
+              className="flex items-center gap-1.5 text-xs cursor-pointer select-none"
             >
               <input
                 type="checkbox"
                 checked={Boolean(item.done)}
                 onChange={() => onToggleCheck(item.id)}
-                className="w-3 h-3 accent-blue-600"
+                className="w-3.5 h-3.5 accent-blue-600"
               />
               <span
                 className={`truncate ${
-                  item.done ? 'line-through text-zinc-400' : 'text-zinc-700 dark:text-zinc-200'
+                  item.done ? 'line-through text-zinc-400' : 'text-zinc-800 dark:text-zinc-200'
                 }`}
               >
                 {item.text}
@@ -3417,11 +5032,11 @@ function SharedNoteCard({
 
       {/* 태그 */}
       {(note.tags || []).length > 0 && (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5">
           {note.tags.map((tag, i) => (
             <span
               key={i}
-              className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-muted-light dark:bg-muted-dark text-zinc-500 dark:text-zinc-400"
+              className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-muted-light dark:bg-muted-dark text-zinc-600 dark:text-zinc-300"
             >
               #{tag}
             </span>
@@ -3429,40 +5044,59 @@ function SharedNoteCard({
         </div>
       )}
 
-      {/* 하단 액션 바 */}
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pt-2 border-t border-line-light dark:border-line-dark text-[11px] font-bold">
-        <div className="flex items-center gap-2">
+      {/* 섹션 빠른 변경 (WCAG 단일 클릭 대안) + 하단 액션 바 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pt-2.5 border-t border-line-light dark:border-line-dark text-xs font-semibold">
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button
             type="button"
             onClick={onSavePersonal}
-            className="text-emerald-600 dark:text-emerald-400 hover:underline whitespace-nowrap"
+            className="text-emerald-600 dark:text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
             title="내 개인 노트로 저장"
           >
-            📥 내 노트로
+            <Icon name="download" size={12} />
+            <span>내 노트로</span>
           </button>
           <button
             type="button"
             onClick={onShareInChat}
-            className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+            className="text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
             title="채팅창에 이 노트 공유"
           >
-            💬 채팅공유
+            <Icon name="message" size={12} />
+            <span>채팅공유</span>
           </button>
+          {sections.length > 1 && onMoveToSection && (
+            <select
+              value={note.sectionId || 'idea'}
+              onChange={(e) => onMoveToSection(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              title="섹션 이동"
+              className="max-w-[96px] px-1.5 py-0.5 rounded-md bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 outline-none cursor-pointer"
+            >
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onEdit}
-            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 whitespace-nowrap"
+            className="text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
           >
-            수정
+            <Icon name="edit" size={12} />
+            <span>수정</span>
           </button>
           <button
             type="button"
             onClick={onDelete}
-            className="text-zinc-400 hover:text-red-500 whitespace-nowrap"
+            className="text-zinc-500 hover:text-red-500 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
           >
-            삭제
+            <Icon name="trash" size={12} />
+            <span>삭제</span>
           </button>
         </div>
       </div>

@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   deleteSharedAccount: (payload) => ipcRenderer.invoke('shared:delete-account', payload),
   hostSharedRoom: (payload) => ipcRenderer.invoke('shared:host-room', payload),
   joinSharedRoom: (payload) => ipcRenderer.invoke('shared:join-room', payload),
+  joinSharedRoomByCode: (payload) => ipcRenderer.invoke('shared:join-by-code', payload),
   quickEnterSharedRoom: (payload) => ipcRenderer.invoke('shared:quick-enter-room', payload),
   removeJoinedSharedRoom: (payload) => ipcRenderer.invoke('shared:remove-joined-room', payload),
   leaveSharedRoom: () => ipcRenderer.invoke('shared:leave-room'),
@@ -52,6 +53,8 @@ contextBridge.exposeInMainWorld('treeNoteAPI', {
   pickSharedRoomBackup: () => ipcRenderer.invoke('shared:pick-room-backup'),
   importSharedRoom: (payload) => ipcRenderer.invoke('shared:import-room', payload),
   deleteSavedSharedRoom: (payload) => ipcRenderer.invoke('shared:delete-saved-room', payload),
+  pickSharedChatFiles: (options) => ipcRenderer.invoke('shared:pick-chat-files', options),
+  saveSharedAttachment: (payload) => ipcRenderer.invoke('shared:save-attachment', payload),
   onSharedRoomUpdated: (callback) => {
     const handler = (_event, roomSnapshot) => callback(roomSnapshot);
     ipcRenderer.on('shared:room-updated', handler);
