@@ -15,3 +15,8 @@ notes-data*.json
 *백업*.json
 backups/
 *.bak
+
+# 로컬 AI 에이전트 스킬 및 Python 캐시
+.agents/
+__pycache__/
+*.pyc
