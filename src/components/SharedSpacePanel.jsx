@@ -931,8 +931,8 @@ export function SharedSpacePanel({
           </form>
         )}
 
-        <div className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-          🛡️ 비밀번호는 <code className="font-mono text-zinc-700 dark:text-zinc-200">scrypt</code>로 해시되고, 기기 식별 개인키는 <code className="font-mono text-zinc-700 dark:text-zinc-200">AES-256-GCM</code>으로 암호화 보관됩니다. 방 입장 시 <code className="font-mono text-zinc-700 dark:text-zinc-200">Ed25519</code> 전자서명과 세션 토큰으로 발신자를 검증합니다.
+        <div className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark text-[11px] text-zinc-500 dark:text-zinc-400">
+          🛡️ 계정 정보는 기기에 암호화되어 안전하게 보관됩니다.
         </div>
       </div>
     );
@@ -959,9 +959,6 @@ export function SharedSpacePanel({
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
                 @{currentAccount.accountId}
-                {currentAccount.uid?.includes(':')
-                  ? ` · 키 지문 ${currentAccount.uid.split(':')[2]?.slice(0, 8) || ''}`
-                  : ''}
               </p>
             </div>
           </div>
