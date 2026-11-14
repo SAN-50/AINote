@@ -37,8 +37,8 @@ const RELAY_ENDPOINTS = [
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://test.mosquitto.org:8081/mqtt'
 ];
-const RELAY_CHUNK_CHARS = 24 * 1024;
-const RELAY_REASSEMBLY_TTL_MS = 25 * 1000;
+const RELAY_CHUNK_CHARS = 16 * 1024;
+const RELAY_REASSEMBLY_TTL_MS = 35 * 1000;
 const RELAY_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 function normalizeAccountId(rawId) {
@@ -685,6 +685,13 @@ class MqttWsRelayClient {
             }, 15000);
             this.onConnected(endpointUrl);
             resolve(endpointUrl);
+          } else if (settled && this.ws === ws && this.connected) {
+            // Process any PUBLISH / PINGRESP bundled in the same frame right after SUBACK
+            if (item.type === 'PINGRESP') {
+              this.lastPongAt = Date.now();
+            } else if (item.type === 'PUBLISH') {
+              this._processPublishedMessage(item.msgStr);
+            }
           }
         }
       });
@@ -739,10 +746,11 @@ class MqttWsRelayClient {
   publishJson(obj) {
     if (!this.connected || !this.ws || this.ws.readyState !== 1) return false;
     try {
+      const wsRef = this.ws;
       const payload = { ...obj, s: this.clientId };
       const json = JSON.stringify(payload);
       if (json.length <= RELAY_CHUNK_CHARS) {
-        this.ws.send(this._buildPublishPacket(Buffer.from(json, 'utf8')));
+        wsRef.send(this._buildPublishPacket(Buffer.from(json, 'utf8')));
         return true;
       }
       const msgId = crypto.randomBytes(6).toString('hex');
@@ -755,7 +763,21 @@ class MqttWsRelayClient {
           n: total,
           d: json.slice(i * RELAY_CHUNK_CHARS, (i + 1) * RELAY_CHUNK_CHARS)
         });
-        this.ws.send(this._buildPublishPacket(Buffer.from(chunkPayload, 'utf8')));
+        const packet = this._buildPublishPacket(Buffer.from(chunkPayload, 'utf8'));
+        if (total <= 3 || i === 0) {
+          wsRef.send(packet);
+        } else {
+          // Stagger large multi-chunk transfers slightly to prevent public broker QoS0 burst drops
+          const delayMs = Math.floor(i / 2) * 12;
+          setTimeout(() => {
+            if (this.closed || !this.connected || this.ws !== wsRef || wsRef.readyState !== 1) {
+              return;
+            }
+            try {
+              wsRef.send(packet);
+            } catch (_sendErr) {}
+          }, delayMs);
+        }
       }
       return true;
     } catch (_e) {
@@ -766,6 +788,7 @@ class MqttWsRelayClient {
   close() {
     this.closed = true;
     this.connected = false;
+    this.chunkMap.clear();
     if (this.keepaliveTimer) {
       clearInterval(this.keepaliveTimer);
       this.keepaliveTimer = null;
@@ -1301,7 +1324,8 @@ class SharedRoomManager {
       folders: room.folders || DEFAULT_FOLDERS,
       notes: room.notes || [],
       messages: room.messages || [],
-      members: this.getActiveMembersList()
+      members: this.getActiveMembersList(),
+      kickedMembers: this.activeSession.mode === 'host' ? room.kickedMembers || [] : []
     };
   }
 
@@ -1356,6 +1380,7 @@ class SharedRoomManager {
           notes: room.notes || [],
           messages: room.messages || [],
           kickedUids: [],
+          kickedMembers: [],
           createdAt: room.createdAt || now,
           updatedAt: now
         };
@@ -1474,6 +1499,7 @@ class SharedRoomManager {
       notes,
       messages,
       kickedUids: [],
+      kickedMembers: [],
       createdAt: typeof rawRoom.createdAt === 'number' ? rawRoom.createdAt : now,
       updatedAt: now
     };
@@ -1865,6 +1891,7 @@ class SharedRoomManager {
         notes: Array.isArray(existingRoom.notes) ? existingRoom.notes : [],
         messages: Array.isArray(existingRoom.messages) ? existingRoom.messages : [],
         kickedUids: Array.isArray(existingRoom.kickedUids) ? existingRoom.kickedUids : [],
+        kickedMembers: Array.isArray(existingRoom.kickedMembers) ? existingRoom.kickedMembers : [],
         updatedAt: Date.now()
       };
     } else {
@@ -1914,6 +1941,7 @@ class SharedRoomManager {
           }
         ],
         kickedUids: [],
+        kickedMembers: [],
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -1952,9 +1980,12 @@ class SharedRoomManager {
     });
     this.saveStore();
 
+    const snapshot = this.getActiveRoomSnapshot();
+    this.sendToRenderer('shared:room-updated', snapshot);
+
     return {
       ok: true,
-      room: this.getActiveRoomSnapshot()
+      room: snapshot
     };
   }
 
@@ -2123,7 +2154,21 @@ class SharedRoomManager {
         ...result
       });
       if (result.ok) {
-        this.broadcastRoomUpdate();
+        // Update Host UI immediately, and defer network ROOM_STATE broadcast briefly
+        // so it never competes with multi-chunk JOIN_RES packets on the same MQTT burst
+        this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
+        if (this.sseClients.size > 0 || this.relayClients.size > 1) {
+          if (this._deferredJoinBroadcastTimer) clearTimeout(this._deferredJoinBroadcastTimer);
+          this._deferredJoinBroadcastTimer = setTimeout(() => {
+            this._deferredJoinBroadcastTimer = null;
+            if (
+              this.activeSession?.mode === 'host' &&
+              this.activeSession.roomId === room.roomId
+            ) {
+              this.broadcastRoomUpdate();
+            }
+          }, 180);
+        }
       }
       return;
     }
@@ -2429,17 +2474,31 @@ class SharedRoomManager {
         });
       }
 
-      const joinSysMsg = {
-        id: crypto.randomUUID(),
-        text: `${guestProfile.name} (@${guestProfile.accountId})님이 방에 입장했습니다.`,
-        imageDataUrl: '',
-        sharedNoteRef: null,
-        author: guestProfile,
-        createdAt: Date.now(),
-        isSystem: true,
-        pinnedToNoteId: ''
-      };
-      room.messages = [...(room.messages || []), joinSysMsg].slice(-MAX_CHAT_MESSAGES);
+      const nowTs = Date.now();
+      const recentJoinDup = (room.messages || []).slice(-6).some(
+        (m) =>
+          m?.isSystem &&
+          m?.author?.uid === guestProfile.uid &&
+          typeof m?.text === 'string' &&
+          m.text.includes('입장했습니다') &&
+          nowTs - Number(m.createdAt || 0) < 12000
+      );
+      if (!recentJoinDup) {
+        const joinSysMsg = {
+          id: crypto.randomUUID(),
+          text: `${guestProfile.name} (@${guestProfile.accountId})님이 방에 입장했습니다.`,
+          imageDataUrl: '',
+          attachments: [],
+          sharedNoteRef: null,
+          replyTo: null,
+          reactions: {},
+          author: guestProfile,
+          createdAt: nowTs,
+          isSystem: true,
+          pinnedToNoteId: ''
+        };
+        room.messages = [...(room.messages || []), joinSysMsg].slice(-MAX_CHAT_MESSAGES);
+      }
       this.persistHostedRoom(room);
 
       const responseEnvelope = encryptPayload(
@@ -2569,6 +2628,11 @@ class SharedRoomManager {
 
       this.recordJoinAttempt(remoteIp, true);
 
+      try {
+        req.setTimeout?.(0);
+        res.setTimeout?.(0);
+      } catch (_e) {}
+
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -2581,9 +2645,18 @@ class SharedRoomManager {
         lastSeen: Date.now()
       });
 
+      const sseKeepalive = setInterval(() => {
+        try {
+          res.write(': keepalive\n\n');
+        } catch (_e) {
+          clearInterval(sseKeepalive);
+        }
+      }, 20000);
+
       this.broadcastRoomUpdate();
 
       req.on('close', () => {
+        clearInterval(sseKeepalive);
         this.sseClients.delete(guestProfile.uid);
         this.broadcastRoomUpdate();
       });
@@ -3138,53 +3211,65 @@ class SharedRoomManager {
       }
 
       try {
-        let challengeRes = null;
+        const performChallengeAndJoin = async () => {
+          let challengeRes = null;
+          try {
+            challengeRes = await this.sendRelayRequest(
+              relayClient,
+              { op: 'CHALLENGE', roomId },
+              'CHALLENGE_RES',
+              2500
+            );
+          } catch (_firstTryErr) {
+            challengeRes = await this.sendRelayRequest(
+              relayClient,
+              { op: 'CHALLENGE', roomId },
+              'CHALLENGE_RES',
+              2500
+            );
+          }
+
+          if (!challengeRes?.ok || !challengeRes.nonce) {
+            throw new Error('인증 챌린지를 받아오지 못했습니다.');
+          }
+
+          const signMsg = Buffer.from(
+            `${roomId}:${authToken}:${challengeRes.nonce}:${account.uid}`,
+            'utf8'
+          );
+          const signature = crypto
+            .sign(null, signMsg, authSess.privateKeyPem)
+            .toString('base64');
+
+          const joinEnvelope = encryptPayload(
+            {
+              profile: account,
+              publicKeyPem: authSess.publicKeyPem,
+              nonce: challengeRes.nonce,
+              signature
+            },
+            cipherKey
+          );
+
+          return await this.sendRelayRequest(
+            relayClient,
+            { op: 'JOIN', roomId, authToken, envelope: joinEnvelope },
+            'JOIN_RES',
+            10000
+          );
+        };
+
+        let joinRes = null;
         try {
-          challengeRes = await this.sendRelayRequest(
-            relayClient,
-            { op: 'CHALLENGE', roomId },
-            'CHALLENGE_RES',
-            2200
-          );
-        } catch (_firstTryErr) {
-          challengeRes = await this.sendRelayRequest(
-            relayClient,
-            { op: 'CHALLENGE', roomId },
-            'CHALLENGE_RES',
-            2200
-          );
+          joinRes = await performChallengeAndJoin();
+        } catch (joinAttemptErr) {
+          // Retry once on the connected relay if JOIN_RES packet timed out under load
+          if (relayClient.connected) {
+            joinRes = await performChallengeAndJoin();
+          } else {
+            throw joinAttemptErr;
+          }
         }
-
-        if (!challengeRes?.ok || !challengeRes.nonce) {
-          relayClient.close();
-          lastErr = new Error('인증 챌린지를 받아오지 못했습니다.');
-          continue;
-        }
-
-        const signMsg = Buffer.from(
-          `${roomId}:${authToken}:${challengeRes.nonce}:${account.uid}`,
-          'utf8'
-        );
-        const signature = crypto
-          .sign(null, signMsg, authSess.privateKeyPem)
-          .toString('base64');
-
-        const joinEnvelope = encryptPayload(
-          {
-            profile: account,
-            publicKeyPem: authSess.publicKeyPem,
-            nonce: challengeRes.nonce,
-            signature
-          },
-          cipherKey
-        );
-
-        const joinRes = await this.sendRelayRequest(
-          relayClient,
-          { op: 'JOIN', roomId, authToken, envelope: joinEnvelope },
-          'JOIN_RES',
-          6000
-        );
 
         if (!joinRes || !joinRes.ok) {
           relayClient.close();
@@ -3325,9 +3410,12 @@ class SharedRoomManager {
     });
     this.saveStore();
 
+    const snapshot = this.getActiveRoomSnapshot();
+    this.sendToRenderer('shared:room-updated', snapshot);
+
     return {
       ok: true,
-      room: this.getActiveRoomSnapshot()
+      room: snapshot
     };
   }
 
@@ -3565,7 +3653,14 @@ class SharedRoomManager {
         }
       },
       (res) => {
+        try {
+          req.setTimeout?.(0);
+          res.setTimeout?.(0);
+        } catch (_e) {}
+
         if (res.statusCode !== 200) {
+          if (this.guestEventReq !== req) return;
+          this.leaveCurrentRoom().catch(() => {});
           this.sendToRenderer('shared:room-disconnected', {
             reason: '호스트와의 연결이 종료되었거나 접근이 거부되었습니다.'
           });
@@ -3574,9 +3669,10 @@ class SharedRoomManager {
 
         let buffer = '';
         res.on('data', (chunk) => {
+          if (this.guestEventReq !== req) return;
           if (Buffer.byteLength(buffer, 'utf8') + chunk.length > MAX_HTTP_BODY_BYTES) {
             req.destroy();
-            this.leaveCurrentRoom();
+            this.leaveCurrentRoom().catch(() => {});
             this.sendToRenderer('shared:room-disconnected', {
               reason: '호스트로부터 허용 한도를 초과한 데이터가 수신되어 연결을 차단했습니다.'
             });
@@ -3595,7 +3691,7 @@ class SharedRoomManager {
                   this.activeSession.room = decoded.room;
                   this.sendToRenderer('shared:room-updated', this.getActiveRoomSnapshot());
                 } else if (decoded.type === 'KICKED') {
-                  this.leaveCurrentRoom();
+                  this.leaveCurrentRoom().catch(() => {});
                   this.sendToRenderer('shared:room-disconnected', {
                     reason: '호스트에 의해 방에서 내보내졌습니다.'
                   });
@@ -3608,7 +3704,13 @@ class SharedRoomManager {
         });
 
         res.on('end', () => {
-          if (this.activeSession && this.activeSession.mode === 'guest') {
+          if (
+            this.guestEventReq === req &&
+            this.activeSession &&
+            this.activeSession.mode === 'guest' &&
+            this.activeSession.transport === 'lan'
+          ) {
+            this.leaveCurrentRoom().catch(() => {});
             this.sendToRenderer('shared:room-disconnected', {
               reason: '호스트가 방을 닫았거나 연결이 끊어졌습니다.'
             });
@@ -4138,24 +4240,40 @@ class SharedRoomManager {
         if (!targetUid || targetUid === room.hostProfile?.uid) {
           return { ok: false, error: '잘못된 대상입니다.' };
         }
+        const sseEntry = this.sseClients.get(targetUid);
+        const relayEntry = this.relayClients.get(targetUid);
+        const knownMsgAuthor = [...(room.messages || [])]
+          .reverse()
+          .find((m) => m?.author?.uid === targetUid)?.author;
+        const targetProfile = sanitizeAuthor(
+          sseEntry?.profile || relayEntry?.profile || knownMsgAuthor || { uid: targetUid }
+        );
         room.kickedUids = Array.from(new Set([...(room.kickedUids || []), targetUid]));
+        const nextKicked = (room.kickedMembers || []).filter((m) => m && m.uid !== targetUid);
+        nextKicked.push({
+          uid: targetUid,
+          accountId: targetProfile.accountId || '',
+          name: targetProfile.name || '멤버',
+          avatarColor: targetProfile.avatarColor || '#2563EB',
+          kickedAt: Date.now()
+        });
+        room.kickedMembers = nextKicked;
         for (const [sessToken, sessVal] of this.verifiedSessions.entries()) {
           if (sessVal.profile?.uid === targetUid) {
             this.verifiedSessions.delete(sessToken);
           }
         }
-        const client = this.sseClients.get(targetUid);
-        if (client) {
+        if (sseEntry) {
           try {
             const kickEnv = encryptPayload({ type: 'KICKED' }, this.activeSession.cipherKey);
-            client.res.write(`data: ${JSON.stringify(kickEnv)}\n\n`);
-            client.res.end();
+            sseEntry.res.write(`data: ${JSON.stringify(kickEnv)}\n\n`);
+            sseEntry.res.end();
           } catch (_e) {
             // ignore
           }
           this.sseClients.delete(targetUid);
         }
-        if (this.relayClients.has(targetUid)) {
+        if (relayEntry) {
           this.relayClients.delete(targetUid);
           if (this.hostRelayClient && this.hostRelayClient.connected) {
             const kickEnv = encryptPayload(
@@ -4165,6 +4283,55 @@ class SharedRoomManager {
             this.hostRelayClient.publishJson({ op: 'KICKED', envelope: kickEnv });
           }
         }
+        room.messages = [
+          ...(room.messages || []),
+          {
+            id: crypto.randomUUID(),
+            text: `${targetProfile.name}${targetProfile.accountId ? ` (@${targetProfile.accountId})` : ''}님이 호스트에 의해 내보내졌습니다 (재입장 차단).`,
+            imageDataUrl: '',
+            attachments: [],
+            sharedNoteRef: null,
+            replyTo: null,
+            reactions: {},
+            author: room.hostProfile,
+            createdAt: Date.now(),
+            isSystem: true,
+            pinnedToNoteId: ''
+          }
+        ].slice(-MAX_CHAT_MESSAGES);
+        break;
+      }
+
+      case 'UNKICK_MEMBER': {
+        if (!isOwner) return { ok: false, error: '호스트만 차단을 해제할 수 있습니다.' };
+        const targetUid = String(action.targetUid || '');
+        if (!targetUid) {
+          return { ok: false, error: '잘못된 대상입니다.' };
+        }
+        const prevEntry = (room.kickedMembers || []).find((m) => m && m.uid === targetUid);
+        const wasKicked =
+          (room.kickedUids || []).includes(targetUid) || Boolean(prevEntry);
+        if (!wasKicked) {
+          return { ok: false, error: '이미 차단이 해제되었거나 차단 목록에 없는 멤버입니다.' };
+        }
+        room.kickedUids = (room.kickedUids || []).filter((uid) => uid !== targetUid);
+        room.kickedMembers = (room.kickedMembers || []).filter((m) => m && m.uid !== targetUid);
+        room.messages = [
+          ...(room.messages || []),
+          {
+            id: crypto.randomUUID(),
+            text: `${prevEntry?.name ? `${prevEntry.name}${prevEntry.accountId ? ` (@${prevEntry.accountId})` : ''}님의` : '멤버의'} 방 내보내기(차단)가 해제되어 다시 입장할 수 있습니다.`,
+            imageDataUrl: '',
+            attachments: [],
+            sharedNoteRef: null,
+            replyTo: null,
+            reactions: {},
+            author: room.hostProfile,
+            createdAt: Date.now(),
+            isSystem: true,
+            pinnedToNoteId: ''
+          }
+        ].slice(-MAX_CHAT_MESSAGES);
         break;
       }
 
@@ -4181,6 +4348,10 @@ class SharedRoomManager {
   }
 
   async leaveCurrentRoom() {
+    if (this._deferredJoinBroadcastTimer) {
+      clearTimeout(this._deferredJoinBroadcastTimer);
+      this._deferredJoinBroadcastTimer = null;
+    }
     if (this._hostHeartbeatTimer) {
       clearInterval(this._hostHeartbeatTimer);
       this._hostHeartbeatTimer = null;

@@ -727,6 +727,9 @@ export function SharedSpacePanel({
       });
       if (res?.ok && res.room) {
         setActiveRoom(res.room);
+        setSelectedNoteIds([]);
+        setViewingSharedNote(null);
+        setShowMembersPopover(false);
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
         if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
@@ -751,6 +754,9 @@ export function SharedSpacePanel({
       if (res?.ok && res.room) {
         setActiveRoom(res.room);
         setJoinInviteOnlyCode('');
+        setSelectedNoteIds([]);
+        setViewingSharedNote(null);
+        setShowMembersPopover(false);
         const stateRes = await api.getSharedState();
         if (stateRes?.recentRooms) setRecentRooms(stateRes.recentRooms);
         if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
@@ -807,6 +813,31 @@ export function SharedSpacePanel({
     if (stateRes?.savedRooms) setSavedRooms(stateRes.savedRooms);
     if (stateRes?.joinedRooms) setJoinedRooms(stateRes.joinedRooms);
     showToast?.('방에서 나왔습니다.', 'info');
+  };
+
+  const handleKickMember = async (targetUid, targetName) => {
+    if (!api?.dispatchSharedAction || !targetUid) return;
+    const res = await api.dispatchSharedAction({ type: 'KICK_MEMBER', targetUid });
+    if (res?.ok) {
+      if (res.room) setActiveRoom(res.room);
+      showToast?.(`${targetName || '멤버'}님을 내보내고 재입장을 차단했습니다.`, 'info');
+    } else {
+      showToast?.(res?.error || '멤버 내보내기에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleUnkickMember = async (targetUid, targetName) => {
+    if (!api?.dispatchSharedAction || !targetUid) return;
+    const res = await api.dispatchSharedAction({ type: 'UNKICK_MEMBER', targetUid });
+    if (res?.ok) {
+      if (res.room) setActiveRoom(res.room);
+      showToast?.(
+        `${targetName || '멤버'}님의 차단을 해제했습니다. 이제 다시 입장할 수 있습니다 ✓`,
+        'success'
+      );
+    } else {
+      showToast?.(res?.error || '차단 해제에 실패했습니다.', 'error');
+    }
   };
 
   const handleSaveRoomNow = async () => {
@@ -2466,10 +2497,8 @@ export function SharedSpacePanel({
                       {isHost && !m.isHost && (
                         <button
                           type="button"
-                          onClick={() =>
-                            api.dispatchSharedAction({ type: 'KICK_MEMBER', targetUid: m.uid })
-                          }
-                          className="text-[11px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white shrink-0"
+                          onClick={() => handleKickMember(m.uid, m.name)}
+                          className="text-[11px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white shrink-0 transition-colors cursor-pointer"
                         >
                           내보내기
                         </button>
@@ -2477,6 +2506,37 @@ export function SharedSpacePanel({
                     </div>
                   ))}
                 </div>
+                {isHost && (activeRoom.kickedMembers || []).length > 0 && (
+                  <div className="pt-2 border-t border-line-light dark:border-line-dark flex flex-col gap-1.5">
+                    <span className="text-[11px] font-bold text-red-600 dark:text-red-400">
+                      차단된 멤버 ({(activeRoom.kickedMembers || []).length}명)
+                    </span>
+                    <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto">
+                      {(activeRoom.kickedMembers || []).map((km) => (
+                        <div key={km.uid} className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <UserAvatar user={km} size="sm" />
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-zinc-800 dark:text-zinc-200 truncate">
+                                {km.name || '멤버'}
+                              </div>
+                              <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                                {km.accountId ? `@${km.accountId}` : km.uid?.slice(0, 8)}
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleUnkickMember(km.uid, km.name)}
+                            className="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-600 hover:text-white shrink-0 transition-colors cursor-pointer"
+                          >
+                            차단 해제
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {isHost && (
                   <div className="pt-2 border-t border-line-light dark:border-line-dark flex flex-col gap-1">
                     <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
@@ -4773,6 +4833,51 @@ export function SharedSpacePanel({
                     <option value="host-delete">호스트만 삭제 가능</option>
                     <option value="readonly">읽기 전용 (호스트만 작성)</option>
                   </select>
+                </div>
+
+                {/* 내보내기(차단)된 멤버 관리 */}
+                <div className="p-3 rounded-xl bg-canvas-light dark:bg-canvas-dark border border-line-light dark:border-line-dark flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                      🚫 차단(내보내기)된 멤버
+                    </span>
+                    <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+                      {(activeRoom.kickedMembers || []).length}명
+                    </span>
+                  </div>
+                  {(activeRoom.kickedMembers || []).length === 0 ? (
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      현재 내보내기 차단된 멤버가 없습니다.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2 max-h-36 overflow-y-auto">
+                      {(activeRoom.kickedMembers || []).map((km) => (
+                        <div
+                          key={km.uid}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-surface-light dark:bg-surface-dark border border-line-light dark:border-line-dark"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <UserAvatar user={km} size="sm" />
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                                {km.name || '멤버'}
+                              </div>
+                              <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                                {km.accountId ? `@${km.accountId}` : km.uid?.slice(0, 8)}
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleUnkickMember(km.uid, km.name)}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shrink-0 transition-colors cursor-pointer"
+                          >
+                            차단 해제
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <button
