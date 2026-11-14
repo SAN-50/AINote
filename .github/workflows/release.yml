@@ -33,26 +33,39 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Check and Auto-Bump Version if Release Exists
+      - name: Resolve Release Version (No Reverse Push)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CURRENT_VER=$(node -p "require('./package.json').version")
-          echo "Current package.json version: v${CURRENT_VER}"
-
-          if gh release view "v${CURRENT_VER}" >/dev/null 2>&1; then
-            echo "Release v${CURRENT_VER} already exists. Auto-bumping patch version..."
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            npm version patch --no-git-tag-version
-            NEW_VER=$(node -p "require('./package.json').version")
-            git add package.json package-lock.json
-            git commit -m "chore(release): bump version to v${NEW_VER} [skip ci]"
-            git push origin HEAD:main
-            echo "Bumped version to v${NEW_VER}"
-          else
-            echo "Release v${CURRENT_VER} does not exist yet. Building v${CURRENT_VER}..."
+          PKG_VER=$(node -p "require('./package.json').version")
+          EXISTING_TAGS=$(gh release list --limit 100 --json tagName -q '.[].tagName' || true)
+          TARGET_VER=$(PKG_VER="$PKG_VER" EXISTING_TAGS="$EXISTING_TAGS" node -e '
+            const parse = (s) => {
+              const m = String(s || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+              return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+            };
+            const cmp = (a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
+            const fmt = (v) => v.join(".");
+            const pkg = parse(process.env.PKG_VER) || [1, 0, 0];
+            const tags = (process.env.EXISTING_TAGS || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const existingSet = new Set(tags.map(t => t.replace(/^v/, "")));
+            let maxRel = null;
+            for (const t of tags) {
+              const p = parse(t);
+              if (p && (!maxRel || cmp(p, maxRel) > 0)) maxRel = p;
+            }
+            let target = [...pkg];
+            if (existingSet.has(fmt(target)) || (maxRel && cmp(target, maxRel) <= 0)) {
+              const base = maxRel && cmp(maxRel, pkg) > 0 ? maxRel : pkg;
+              target = [base[0], base[1], base[2] + 1];
+              while (existingSet.has(fmt(target))) target[2] += 1;
+            }
+            process.stdout.write(fmt(target));
+          ')
+          echo "Resolved release version: v${TARGET_VER} (package.json was v${PKG_VER})"
+          if [ "$TARGET_VER" != "$PKG_VER" ]; then
+            npm version "$TARGET_VER" --no-git-tag-version --allow-same-version
           fi
 
       - name: Install dependencies
@@ -111,6 +124,7 @@ jobs:
             "$EXE_FILE" \
             "$BLOCKMAP_FILE" \
             "$YML_FILE" \
+            --target "${{ github.sha }}" \
             --title "나무 노트 v${VER}" \
             --notes-file dist/release-notes.md \
             --latest
